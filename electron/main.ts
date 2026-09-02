@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu, shell } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { autoUpdater } from 'electron-updater';
 import { DuckDbPivotEngine } from './services/duckdbEngine.js';
 import { PivotExporter } from './services/pivotExporter.js';
 import { TemplateManager } from './services/templateManager.js';
@@ -212,4 +213,139 @@ ipcMain.handle('pivot:exportCsv', async (_, nodes: any[], template: PivotTemplat
   if (res.canceled || !res.filePath) return null;
   await pivotExporter.exportToCsv(nodes, template, res.filePath);
   return { filePath: res.filePath };
+});
+
+// ---------------------------------------------------------------------------
+// Auto-Updater Configuration & IPC Event Handlers
+// ---------------------------------------------------------------------------
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = false;
+
+autoUpdater.on('checking-for-update', () => {
+  win?.webContents.send('updater:status', { status: 'checking' });
+});
+
+autoUpdater.on('update-available', (info) => {
+  win?.webContents.send('updater:status', {
+    status: 'available',
+    version: info.version,
+    releaseDate: info.releaseDate,
+    releaseNotes: info.releaseNotes,
+  });
+});
+
+autoUpdater.on('update-not-available', (info) => {
+  win?.webContents.send('updater:status', {
+    status: 'not-available',
+    version: info.version,
+  });
+});
+
+autoUpdater.on('error', (err) => {
+  win?.webContents.send('updater:status', {
+    status: 'error',
+    error: err?.message || String(err),
+  });
+});
+
+autoUpdater.on('download-progress', (progressObj) => {
+  win?.webContents.send('updater:status', {
+    status: 'downloading',
+    percent: progressObj.percent,
+    bytesPerSecond: progressObj.bytesPerSecond,
+    transferred: progressObj.transferred,
+    total: progressObj.total,
+  });
+});
+
+autoUpdater.on('update-downloaded', (info) => {
+  win?.webContents.send('updater:status', {
+    status: 'downloaded',
+    version: info.version,
+  });
+});
+
+ipcMain.handle('updater:check', async () => {
+  const currentVer = app.getVersion();
+  try {
+    if (!app.isPackaged) {
+      // In development or local unpacked mode, check GitHub Releases directly
+      const res = await fetch('https://api.github.com/repos/minutemancarlo/PivotCraft/releases/latest', {
+        headers: { 'User-Agent': 'PivotCraft-Updater' },
+      });
+      if (!res.ok) {
+        return { status: 'not-available', version: currentVer };
+      }
+      const data = await res.json();
+      const latestTag = (data.tag_name || '').replace(/^v/, '');
+      if (latestTag && latestTag !== currentVer) {
+        return {
+          status: 'available',
+          version: latestTag,
+          releaseNotes: data.body,
+          releaseDate: data.published_at,
+          url: data.html_url,
+        };
+      }
+      return { status: 'not-available', version: currentVer };
+    }
+
+    const result = await autoUpdater.checkForUpdates();
+    if (result && result.updateInfo) {
+      return {
+        status: 'available',
+        version: result.updateInfo.version,
+        releaseNotes: result.updateInfo.releaseNotes,
+        releaseDate: result.updateInfo.releaseDate,
+      };
+    }
+    return { status: 'not-available', version: currentVer };
+  } catch (err: any) {
+    // If electron-updater encounters an error (e.g. running an MSI install), fallback to GitHub API
+    try {
+      const res = await fetch('https://api.github.com/repos/minutemancarlo/PivotCraft/releases/latest', {
+        headers: { 'User-Agent': 'PivotCraft-Updater' },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const latestTag = (data.tag_name || '').replace(/^v/, '');
+        if (latestTag && latestTag !== currentVer) {
+          return {
+            status: 'available',
+            version: latestTag,
+            releaseNotes: data.body,
+            releaseDate: data.published_at,
+            url: data.html_url,
+          };
+        }
+        return { status: 'not-available', version: currentVer };
+      }
+    } catch {
+      // ignore fallback error
+    }
+    return { status: 'error', error: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('updater:download', async () => {
+  try {
+    await autoUpdater.downloadUpdate();
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('updater:quit-and-install', () => {
+  autoUpdater.quitAndInstall(false, true);
+});
+
+ipcMain.handle('updater:get-version', () => {
+  return app.getVersion();
+});
+
+ipcMain.handle('updater:open-url', (_, url: string) => {
+  if (url && (url.startsWith('https://') || url.startsWith('http://'))) {
+    shell.openExternal(url);
+  }
 });

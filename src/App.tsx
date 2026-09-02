@@ -8,6 +8,7 @@ import { PivotFieldList } from './components/PivotFieldList.js';
 import { StatusBar } from './components/StatusBar.js';
 import { ToastContainer, ToastItem } from './components/Toast.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
+import { UpdateModal, UpdateInfo, UpdateProgress } from './components/UpdateModal.js';
 import { PivotTemplate, PivotHierarchyNode, FilterDefinition, ValueMetricDefinition, ColumnStyle, HeaderGroupDefinition, PivotCraftProject } from './types/pivot.js';
 import { globalFormulaParser, preprocessFormula } from './utils/formulaEngine.js';
 
@@ -85,6 +86,122 @@ export const App: React.FC = () => {
   const [isBusy, setIsBusy] = useState<boolean>(false);
   const [isFieldListOpen, setIsFieldListOpen] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string>('Ready. Load a CSV dataset to view records and generate pivot tables.');
+
+  // Auto-Updater State
+  const [currentVersion, setCurrentVersion] = useState<string>('1.0.1');
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'>('not-available');
+  const [updateError, setUpdateError] = useState<string>('');
+  const [isUpdateModalOpen, setIsUpdateModalOpen] = useState<boolean>(false);
+
+  // Auto-Updater lifecycle listener & silent background check on startup
+  React.useEffect(() => {
+    if (window.electronAPI?.updater) {
+      window.electronAPI.updater.getVersion().then((ver: string) => {
+        if (ver) setCurrentVersion(ver);
+      });
+
+      const unsubscribe = window.electronAPI.updater.onStatusChange((payload: any) => {
+        if (payload.status === 'checking') {
+          setUpdateStatus('checking');
+        } else if (payload.status === 'available') {
+          setUpdateStatus('available');
+          setUpdateInfo({
+            version: payload.version,
+            releaseDate: payload.releaseDate,
+            releaseNotes: payload.releaseNotes,
+            url: payload.url,
+          });
+          showToast('info', 'Update Available', `PivotCraft v${payload.version} is available!`);
+        } else if (payload.status === 'downloading') {
+          setUpdateStatus('downloading');
+          setUpdateProgress({
+            percent: payload.percent,
+            bytesPerSecond: payload.bytesPerSecond,
+            transferred: payload.transferred,
+            total: payload.total,
+          });
+        } else if (payload.status === 'downloaded') {
+          setUpdateStatus('downloaded');
+          showToast('success', 'Update Ready', 'Update downloaded. Restart now to install.');
+        } else if (payload.status === 'not-available') {
+          setUpdateStatus('not-available');
+        } else if (payload.status === 'error') {
+          setUpdateStatus('error');
+          setUpdateError(payload.error || 'Update check failed');
+        }
+      });
+
+      // Background check 3s after startup
+      const timer = setTimeout(() => {
+        handleCheckForUpdates(false);
+      }, 3000);
+
+      return () => {
+        clearTimeout(timer);
+        unsubscribe?.();
+      };
+    }
+  }, []);
+
+  const handleCheckForUpdates = async (manual: boolean = true) => {
+    if (!window.electronAPI?.updater) return;
+    setUpdateStatus('checking');
+    if (manual) {
+      setStatusMessage('Checking for PivotCraft updates from GitHub Releases...');
+    }
+    try {
+      const res = await window.electronAPI.updater.checkForUpdates();
+      if (res?.status === 'available') {
+        setUpdateStatus('available');
+        setUpdateInfo({
+          version: res.version,
+          releaseDate: res.releaseDate,
+          releaseNotes: res.releaseNotes,
+          url: res.url,
+        });
+        setIsUpdateModalOpen(true);
+        showToast('info', 'Update Available', `PivotCraft v${res.version} is available!`);
+      } else if (res?.status === 'not-available') {
+        setUpdateStatus('not-available');
+        if (manual) {
+          showToast('info', 'Up to Date', `PivotCraft v${res.version || currentVersion} is the latest version.`);
+          setStatusMessage(`PivotCraft v${res.version || currentVersion} is up to date.`);
+        }
+      } else if (res?.status === 'error') {
+        setUpdateStatus('error');
+        setUpdateError(res.error || 'Failed to check for updates');
+        if (manual) {
+          showToast('error', 'Update Check Failed', res.error || 'Could not reach GitHub Releases.');
+        }
+      }
+    } catch (err: any) {
+      setUpdateStatus('error');
+      setUpdateError(err?.message || String(err));
+      if (manual) {
+        showToast('error', 'Update Check Failed', err?.message || 'Error checking for updates.');
+      }
+    }
+  };
+
+  const handleDownloadUpdate = async () => {
+    setUpdateStatus('downloading');
+    try {
+      const res = await window.electronAPI?.updater?.downloadUpdate();
+      if (res && !res.success && res.error) {
+        setUpdateStatus('error');
+        setUpdateError(res.error);
+      }
+    } catch (err: any) {
+      setUpdateStatus('error');
+      setUpdateError(err?.message || String(err));
+    }
+  };
+
+  const handleInstallUpdate = () => {
+    window.electronAPI?.updater?.quitAndInstall();
+  };
 
   // Persistent storage for direct cell input values and overrides across pivot recalculations
   const cellOverridesRef = React.useRef<Record<string, Record<string, number>>>({});
@@ -867,6 +984,10 @@ export const App: React.FC = () => {
         latencyMs={latencyMs}
         theme={theme}
         onToggleTheme={toggleTheme}
+        currentVersion={currentVersion}
+        updateStatus={updateStatus}
+        onCheckUpdate={() => handleCheckForUpdates(true)}
+        onOpenUpdateModal={() => setIsUpdateModalOpen(true)}
       />
 
       <ActionRibbon
@@ -966,6 +1087,20 @@ export const App: React.FC = () => {
         isBusy={isBusy}
         latencyMs={latencyMs}
         rowCount={rowCount}
+        theme={theme}
+      />
+
+      {/* Auto-Updater Dialog Modal */}
+      <UpdateModal
+        isOpen={isUpdateModalOpen}
+        onClose={() => setIsUpdateModalOpen(false)}
+        currentVersion={currentVersion}
+        updateInfo={updateInfo}
+        progress={updateProgress}
+        status={updateStatus}
+        errorMessage={updateError}
+        onDownload={handleDownloadUpdate}
+        onInstall={handleInstallUpdate}
         theme={theme}
       />
 

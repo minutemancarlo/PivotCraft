@@ -10,11 +10,18 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "package:portable": "npm run build && electron-builder --win portable",
-    "package:msi": "npm run build && electron-builder --win msi"
+    "package:msi": "npm run build && electron-builder --win msi",
+    "package:nsis": "npm run build && electron-builder --win nsis",
+    "package:all": "npm run build && electron-builder --win nsis msi"
   },
   "build": {
     "appId": "com.pivotcraft.app",
     "productName": "PivotCraft",
+    "publish": {
+      "provider": "github",
+      "owner": "minutemancarlo",
+      "repo": "PivotCraft"
+    },
     "npmRebuild": false,
     "nodeGypRebuild": false,
     "forceCodeSigning": false,
@@ -33,6 +40,9 @@
       "node_modules/csv-stringify/**/*",
       "node_modules/expr-eval/**/*",
       "node_modules/fast-xml-parser/**/*",
+      "node_modules/electron-updater/**/*",
+      "node_modules/builder-util-runtime/**/*",
+      "node_modules/lazy-val/**/*",
       "package.json"
     ],
     "asar": true,
@@ -46,10 +56,19 @@
       }
     ],
     "win": {
-      "target": "msi",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "msi", "arch": ["x64"] }
+      ],
       "icon": "public/icon.png",
       "executableName": "PivotCraft",
       "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "PivotCraft-Setup-${version}.${ext}"
     },
     "msi": {
       "artifactName": "PivotCraft-Setup-${version}.${ext}",
@@ -64,6 +83,7 @@
     "csv-parse": "^5.6.0",
     "csv-stringify": "^6.5.2",
     "duckdb": "^1.4.4",
+    "electron-updater": "^6.8.9",
     "exceljs": "^4.4.0",
     "expr-eval": "^2.0.2",
     "fast-xml-parser": "^4.5.1",

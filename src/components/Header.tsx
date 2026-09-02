@@ -1,5 +1,5 @@
 import React from 'react';
-import { Zap, Database, Layers, Sun, Moon } from 'lucide-react';
+import { Zap, Database, Layers, Sun, Moon, ArrowUpCircle, RefreshCw } from 'lucide-react';
 import appIcon from '../../public/icon.png';
 
 interface HeaderProps {
@@ -8,6 +8,10 @@ interface HeaderProps {
   latencyMs: number;
   theme: 'dark' | 'light';
   onToggleTheme: () => void;
+  currentVersion?: string;
+  updateStatus?: 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';
+  onCheckUpdate?: () => void;
+  onOpenUpdateModal?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -16,6 +20,10 @@ export const Header: React.FC<HeaderProps> = ({
   latencyMs,
   theme,
   onToggleTheme,
+  currentVersion = '1.0.1',
+  updateStatus = 'not-available',
+  onCheckUpdate,
+  onOpenUpdateModal,
 }) => {
   const isDark = theme === 'dark';
 
@@ -83,6 +91,32 @@ export const Header: React.FC<HeaderProps> = ({
           <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>Latency:</span>
           <span className="font-bold text-amber-500">{latencyMs.toFixed(1)} ms</span>
         </div>
+
+        {/* Version & Update Button */}
+        {updateStatus === 'available' || updateStatus === 'downloading' || updateStatus === 'downloaded' ? (
+          <button
+            onClick={onOpenUpdateModal}
+            title={updateStatus === 'downloaded' ? 'Update downloaded! Restart to install' : 'New update available - Click to view'}
+            className="border rounded-lg px-2.5 py-1 flex items-center space-x-1.5 text-xs font-bold transition cursor-pointer bg-gradient-to-r from-amber-500/20 to-emerald-500/20 border-emerald-500/50 text-emerald-400 hover:border-emerald-400 animate-pulse shadow-xs"
+          >
+            <ArrowUpCircle className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Update Available ⚡</span>
+          </button>
+        ) : (
+          <button
+            onClick={onCheckUpdate}
+            disabled={updateStatus === 'checking'}
+            title="Click to check for updates from GitHub"
+            className={`border rounded-lg px-2.5 py-1 flex items-center space-x-1.5 text-xs font-mono transition cursor-pointer ${
+              isDark
+                ? 'bg-slate-800/80 hover:bg-slate-700/80 border-slate-700/60 text-slate-300'
+                : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+            }`}
+          >
+            <RefreshCw className={`w-3 h-3 text-sky-400 ${updateStatus === 'checking' ? 'animate-spin text-amber-400' : ''}`} />
+            <span>v{currentVersion}</span>
+          </button>
+        )}
 
         {/* Theme Toggle Button */}
         <button

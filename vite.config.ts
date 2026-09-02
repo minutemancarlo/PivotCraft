@@ -12,7 +12,7 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
-              external: ['duckdb', 'adm-zip', 'exceljs'],
+              external: ['duckdb', 'adm-zip', 'exceljs', 'electron-updater'],
             },
           },
         },
