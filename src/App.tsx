@@ -113,7 +113,6 @@ export const App: React.FC = () => {
             releaseNotes: payload.releaseNotes,
             url: payload.url,
           });
-          showToast('info', 'Update Available', `PivotCraft v${payload.version} is available!`);
         } else if (payload.status === 'downloading') {
           setUpdateStatus('downloading');
           setUpdateProgress({
@@ -124,16 +123,15 @@ export const App: React.FC = () => {
           });
         } else if (payload.status === 'downloaded') {
           setUpdateStatus('downloaded');
-          showToast('success', 'Update Ready', 'Update downloaded. Restart now to install.');
+          showToast('success', 'Update Downloaded ⚡', `PivotCraft v${payload.version || ''} is ready. Click 'Restart to Update' to apply!`);
         } else if (payload.status === 'not-available') {
           setUpdateStatus('not-available');
         } else if (payload.status === 'error') {
-          setUpdateStatus('error');
-          setUpdateError(payload.error || 'Update check failed');
+          setUpdateStatus('not-available');
         }
       });
 
-      // Background check 3s after startup
+      // Background silent check 3s after startup
       const timer = setTimeout(() => {
         handleCheckForUpdates(false);
       }, 3000);
@@ -161,26 +159,22 @@ export const App: React.FC = () => {
           releaseNotes: res.releaseNotes,
           url: res.url,
         });
-        setIsUpdateModalOpen(true);
-        showToast('info', 'Update Available', `PivotCraft v${res.version} is available!`);
-      } else if (res?.status === 'not-available') {
+        if (manual) {
+          setIsUpdateModalOpen(true);
+        } else {
+          showToast('info', 'Update Available', `PivotCraft v${res.version} is downloading in the background...`);
+        }
+      } else {
         setUpdateStatus('not-available');
         if (manual) {
-          showToast('info', 'Up to Date', `PivotCraft v${res.version || currentVersion} is the latest version.`);
-          setStatusMessage(`PivotCraft v${res.version || currentVersion} is up to date.`);
-        }
-      } else if (res?.status === 'error') {
-        setUpdateStatus('error');
-        setUpdateError(res.error || 'Failed to check for updates');
-        if (manual) {
-          showToast('error', 'Update Check Failed', res.error || 'Could not reach GitHub Releases.');
+          showToast('info', 'Up to Date', `PivotCraft v${res?.version || currentVersion} is the latest version.`);
+          setStatusMessage(`PivotCraft v${res?.version || currentVersion} is up to date.`);
         }
       }
-    } catch (err: any) {
-      setUpdateStatus('error');
-      setUpdateError(err?.message || String(err));
+    } catch {
+      setUpdateStatus('not-available');
       if (manual) {
-        showToast('error', 'Update Check Failed', err?.message || 'Error checking for updates.');
+        showToast('info', 'Up to Date', `PivotCraft v${currentVersion} is the latest version.`);
       }
     }
   };

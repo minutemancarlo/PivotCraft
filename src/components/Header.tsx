@@ -93,13 +93,31 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Version & Update Button */}
-        {updateStatus === 'available' || updateStatus === 'downloading' || updateStatus === 'downloaded' ? (
+        {updateStatus === 'downloaded' ? (
           <button
             onClick={onOpenUpdateModal}
-            title={updateStatus === 'downloaded' ? 'Update downloaded! Restart to install' : 'New update available - Click to view'}
-            className="border rounded-lg px-2.5 py-1 flex items-center space-x-1.5 text-xs font-bold transition cursor-pointer bg-gradient-to-r from-amber-500/20 to-emerald-500/20 border-emerald-500/50 text-emerald-400 hover:border-emerald-400 animate-pulse shadow-xs"
+            title="Update downloaded! Click to restart and apply update"
+            className="border rounded-lg px-2.5 py-1 flex items-center space-x-1.5 text-xs font-bold transition cursor-pointer bg-gradient-to-r from-emerald-500/30 to-teal-500/30 border-emerald-500/70 text-emerald-400 hover:border-emerald-300 animate-pulse shadow-xs"
           >
             <ArrowUpCircle className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Restart to Update ⚡</span>
+          </button>
+        ) : updateStatus === 'downloading' ? (
+          <button
+            onClick={onOpenUpdateModal}
+            title="Downloading update in background... Click to view progress"
+            className="border rounded-lg px-2.5 py-1 flex items-center space-x-1.5 text-xs font-semibold transition cursor-pointer bg-sky-500/10 border-sky-500/40 text-sky-400 hover:border-sky-300 shadow-xs"
+          >
+            <RefreshCw className="w-3.5 h-3.5 text-sky-400 animate-spin" />
+            <span>Downloading Update...</span>
+          </button>
+        ) : updateStatus === 'available' ? (
+          <button
+            onClick={onOpenUpdateModal}
+            title="Update available - Click to view"
+            className="border rounded-lg px-2.5 py-1 flex items-center space-x-1.5 text-xs font-bold transition cursor-pointer bg-amber-500/20 border-amber-500/40 text-amber-400 hover:border-amber-300 shadow-xs"
+          >
+            <ArrowUpCircle className="w-3.5 h-3.5 text-amber-400" />
             <span>Update Available ⚡</span>
           </button>
         ) : (

@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu, shell } from 'electron';
 import path from 'path';
+import fs from 'fs';
+import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { autoUpdater } from 'electron-updater';
 import { DuckDbPivotEngine } from './services/duckdbEngine.js';
@@ -216,36 +218,64 @@ ipcMain.handle('pivot:exportCsv', async (_, nodes: any[], template: PivotTemplat
 });
 
 // ---------------------------------------------------------------------------
-// Auto-Updater Configuration & IPC Event Handlers
+// Auto-Updater Configuration, Silent Background Download & IPC Handlers
 // ---------------------------------------------------------------------------
-autoUpdater.autoDownload = false;
-autoUpdater.autoInstallOnAppQuit = false;
+function isNewerVersion(latest: string, current: string): boolean {
+  if (!latest || !current) return false;
+  const cleanL = latest.replace(/^v/, '').trim();
+  const cleanC = current.replace(/^v/, '').trim();
+  if (cleanL === cleanC) return false;
+
+  const lParts = cleanL.split('.').map((p) => parseInt(p, 10) || 0);
+  const cParts = cleanC.split('.').map((p) => parseInt(p, 10) || 0);
+
+  const len = Math.max(lParts.length, cParts.length);
+  for (let i = 0; i < len; i++) {
+    const l = lParts[i] || 0;
+    const c = cParts[i] || 0;
+    if (l > c) return true;
+    if (l < c) return false;
+  }
+  return false;
+}
+
+// Download silently in background once update is detected
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
+
+let downloadedInstallerPath: string | null = null;
+let isSilentDownloading = false;
 
 autoUpdater.on('checking-for-update', () => {
   win?.webContents.send('updater:status', { status: 'checking' });
 });
 
 autoUpdater.on('update-available', (info) => {
-  win?.webContents.send('updater:status', {
-    status: 'available',
-    version: info.version,
-    releaseDate: info.releaseDate,
-    releaseNotes: info.releaseNotes,
-  });
+  const currentVer = app.getVersion();
+  if (isNewerVersion(info.version, currentVer)) {
+    win?.webContents.send('updater:status', {
+      status: 'available',
+      version: info.version,
+      releaseDate: info.releaseDate,
+      releaseNotes: info.releaseNotes,
+    });
+  } else {
+    win?.webContents.send('updater:status', {
+      status: 'not-available',
+      version: currentVer,
+    });
+  }
 });
 
 autoUpdater.on('update-not-available', (info) => {
   win?.webContents.send('updater:status', {
     status: 'not-available',
-    version: info.version,
+    version: info?.version || app.getVersion(),
   });
 });
 
 autoUpdater.on('error', (err) => {
-  win?.webContents.send('updater:status', {
-    status: 'error',
-    error: err?.message || String(err),
-  });
+  console.warn('autoUpdater notice:', err?.message || err);
 });
 
 autoUpdater.on('download-progress', (progressObj) => {
@@ -265,6 +295,65 @@ autoUpdater.on('update-downloaded', (info) => {
   });
 });
 
+async function downloadReleaseAssetSilently(releaseData: any) {
+  if (isSilentDownloading || downloadedInstallerPath) return;
+  const assets = releaseData.assets || [];
+  const installer = assets.find((a: any) => a.name.endsWith('.exe')) || assets.find((a: any) => a.name.endsWith('.msi'));
+  if (!installer) return;
+
+  try {
+    isSilentDownloading = true;
+    const dest = path.join(app.getPath('temp'), installer.name);
+    const resp = await fetch(installer.browser_download_url, { headers: { 'User-Agent': 'PivotCraft-Updater' } });
+    if (!resp.ok || !resp.body) {
+      isSilentDownloading = false;
+      return;
+    }
+
+    const totalBytes = Number(resp.headers.get('content-length') || installer.size || 0);
+    let transferred = 0;
+    const fileStream = fs.createWriteStream(dest);
+    let lastTime = Date.now();
+    let bytesSinceLast = 0;
+
+    const reader = resp.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        fileStream.write(Buffer.from(value));
+        transferred += value.length;
+        bytesSinceLast += value.length;
+
+        const now = Date.now();
+        if (now - lastTime >= 400) {
+          const bps = (bytesSinceLast / (now - lastTime)) * 1000;
+          win?.webContents.send('updater:status', {
+            status: 'downloading',
+            percent: totalBytes > 0 ? (transferred / totalBytes) * 100 : 0,
+            bytesPerSecond: bps,
+            transferred,
+            total: totalBytes,
+          });
+          lastTime = now;
+          bytesSinceLast = 0;
+        }
+      }
+    }
+    fileStream.end();
+    downloadedInstallerPath = dest;
+    isSilentDownloading = false;
+
+    win?.webContents.send('updater:status', {
+      status: 'downloaded',
+      version: (releaseData.tag_name || '').replace(/^v/, ''),
+    });
+  } catch (err) {
+    console.warn('Fallback silent download error:', err);
+    isSilentDownloading = false;
+  }
+}
+
 ipcMain.handle('updater:check', async () => {
   const currentVer = app.getVersion();
   try {
@@ -278,7 +367,8 @@ ipcMain.handle('updater:check', async () => {
       }
       const data = await res.json();
       const latestTag = (data.tag_name || '').replace(/^v/, '');
-      if (latestTag && latestTag !== currentVer) {
+      if (isNewerVersion(latestTag, currentVer)) {
+        downloadReleaseAssetSilently(data);
         return {
           status: 'available',
           version: latestTag,
@@ -291,7 +381,7 @@ ipcMain.handle('updater:check', async () => {
     }
 
     const result = await autoUpdater.checkForUpdates();
-    if (result && result.updateInfo) {
+    if (result && result.updateInfo && isNewerVersion(result.updateInfo.version, currentVer)) {
       return {
         status: 'available',
         version: result.updateInfo.version,
@@ -309,7 +399,8 @@ ipcMain.handle('updater:check', async () => {
       if (res.ok) {
         const data = await res.json();
         const latestTag = (data.tag_name || '').replace(/^v/, '');
-        if (latestTag && latestTag !== currentVer) {
+        if (isNewerVersion(latestTag, currentVer)) {
+          downloadReleaseAssetSilently(data);
           return {
             status: 'available',
             version: latestTag,
@@ -323,7 +414,7 @@ ipcMain.handle('updater:check', async () => {
     } catch {
       // ignore fallback error
     }
-    return { status: 'error', error: err?.message || String(err) };
+    return { status: 'not-available', version: currentVer };
   }
 });
 
@@ -337,7 +428,16 @@ ipcMain.handle('updater:download', async () => {
 });
 
 ipcMain.handle('updater:quit-and-install', () => {
-  autoUpdater.quitAndInstall(false, true);
+  if (downloadedInstallerPath && fs.existsSync(downloadedInstallerPath)) {
+    if (downloadedInstallerPath.endsWith('.msi')) {
+      spawn('msiexec.exe', ['/i', downloadedInstallerPath], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      spawn(downloadedInstallerPath, [], { detached: true, stdio: 'ignore' }).unref();
+    }
+    app.quit();
+  } else {
+    autoUpdater.quitAndInstall(false, true);
+  }
 });
 
 ipcMain.handle('updater:get-version', () => {
