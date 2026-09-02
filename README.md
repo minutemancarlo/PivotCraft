@@ -32,9 +32,19 @@ A native desktop application built with **Electron**, **React 18**, **TypeScript
 
 ## 🚀 How to Run
 
-```powershell
-cd C:\Users\Anubis\.gemini\antigravity\scratch\PivotCraft-Electron
-npm.cmd run dev
+```bash
+# Clone the repository
+git clone https://github.com/minutemancarlo/PivotCraft.git
+cd PivotCraft
+
+# Install dependencies
+npm install
+
+# Start development application
+npm run dev
+
+# Package Windows MSI installer (Optional)
+npm run package:msi
 ```
 
 **Quick Testing Out of the Box:**
