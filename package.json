@@ -20,7 +20,8 @@
     "publish": {
       "provider": "github",
       "owner": "minutemancarlo",
-      "repo": "PivotCraft"
+      "repo": "PivotCraft",
+      "releaseType": "release"
     },
     "npmRebuild": false,
     "nodeGypRebuild": false,

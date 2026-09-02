@@ -41,3 +41,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder --win --publish always
+
+      - name: Publish Release Publicly (Remove Draft)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          if [ -n "$TAG_NAME" ] && [ "$TAG_NAME" != "main" ]; then
+            echo "Publishing release for tag: $TAG_NAME"
+            gh release edit "$TAG_NAME" --draft=false || true
+          fi
