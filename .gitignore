@@ -1,0 +1,31 @@
+﻿# Dependencies
+node_modules/
+
+# Production build outputs
+dist/
+dist-electron/
+
+# Electron-builder packaged releases & installers
+release/
+
+# Temp build caches
+.FullName/
+.icon-ico/
+__msi-*/
+
+# OS & Environment files
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

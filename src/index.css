@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom Responsive Scrollbars for Data Grids */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.5);
+}
+.light ::-webkit-scrollbar-track,
+body:not(.dark) ::-webkit-scrollbar-track {
+  background: rgba(226, 232, 240, 0.8);
+}
+::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.light ::-webkit-scrollbar-thumb,
+body:not(.dark) ::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+}
+.light ::-webkit-scrollbar-thumb:hover,
+body:not(.dark) ::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

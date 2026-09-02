@@ -1,0 +1,80 @@
+{
+  "templateName": "Executive Sales & Margin Hierarchy",
+  "version": "2.0",
+  "description": "500,000+ row sales performance pivot with direct editable cells, dynamic margins, and profit formulas.",
+  "filters": [
+    {
+      "column": "Status",
+      "operator": "Equals",
+      "value": "Completed",
+      "isEnabled": true
+    }
+  ],
+  "rowHierarchy": [
+    {
+      "column": "Region",
+      "alias": "Sales Region",
+      "sortOrder": "Ascending",
+      "subtotal": true
+    },
+    {
+      "column": "Category",
+      "alias": "Product Category",
+      "sortOrder": "Ascending",
+      "subtotal": true
+    },
+    {
+      "column": "SalesRep",
+      "alias": "Sales Representative",
+      "sortOrder": "Ascending",
+      "subtotal": false
+    }
+  ],
+  "columnDimensions": [],
+  "values": [
+    {
+      "column": "Quantity",
+      "alias": "Units Sold",
+      "aggregation": "SUM",
+      "format": "#,##0",
+      "isEditable": true
+    },
+    {
+      "column": "Revenue",
+      "alias": "Total Revenue",
+      "aggregation": "SUM",
+      "format": "$#,##0.00",
+      "isEditable": true
+    },
+    {
+      "column": "Cost",
+      "alias": "Total Cost",
+      "aggregation": "SUM",
+      "format": "$#,##0.00",
+      "isEditable": true
+    }
+  ],
+  "calculatedFields": [
+    {
+      "name": "GrossProfit",
+      "alias": "Gross Profit",
+      "formula": "[Total Revenue] - [Total Cost]",
+      "format": "$#,##0.00",
+      "isEditable": false
+    },
+    {
+      "name": "ProfitMargin",
+      "alias": "Margin (%)",
+      "formula": "([Total Revenue] - [Total Cost]) / [Total Revenue]",
+      "format": "0.0%",
+      "isEditable": false
+    },
+    {
+      "name": "PerformanceStatus",
+      "alias": "Performance",
+      "formula": "IF([Total Revenue] >= 50000, \"EXCEEDS TARGET\", \"STANDARD\")",
+      "format": "text",
+      "isEditable": false
+    }
+  ]
+}
