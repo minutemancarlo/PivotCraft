@@ -16,6 +16,11 @@ const __dirname = path.dirname(__filename);
 process.env.DIST = path.join(__dirname, '../dist');
 process.env.VITE_PUBLIC = app.isPackaged ? process.env.DIST : path.join(process.env.DIST, '../public');
 
+// Explicitly set the Application User Model ID for Windows Taskbar icon grouping and pinning
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.pivotcraft.app');
+}
+
 // Disable native OS menu bar (File, Edit, View, Window, Help)
 Menu.setApplicationMenu(null);
 
@@ -35,13 +40,51 @@ const pivotExporter = new PivotExporter();
 const templateManager = new TemplateManager();
 const projectManager = new ProjectManager();
 
+// Automatically clean up stale or downloaded update installers
+function cleanupDownloadedUpdates() {
+  try {
+    const tempDir = app.getPath('temp');
+    if (fs.existsSync(tempDir)) {
+      const files = fs.readdirSync(tempDir);
+      for (const file of files) {
+        if (/^PivotCraft.*(setup|\.exe|\.msi)/i.test(file)) {
+          const fullPath = path.join(tempDir, file);
+          try {
+            fs.unlinkSync(fullPath);
+            console.log('Cleaned up downloaded update installer:', fullPath);
+          } catch {}
+        }
+      }
+    }
+
+    // Also clean up any pending installer cache in userData
+    const userData = app.getPath('userData');
+    for (const sub of ['pending', '__update__', 'pending-updates']) {
+      const p = path.join(userData, sub);
+      if (fs.existsSync(p)) {
+        try {
+          fs.rmSync(p, { recursive: true, force: true });
+        } catch {}
+      }
+    }
+  } catch (err) {
+    console.warn('Cleanup downloaded updates notice:', err);
+  }
+}
+
 function createWindow() {
-  // When packaged, electron-builder copies icon.png into the Resources folder via extraResources.
-  // process.resourcesPath points to that folder both in win-unpacked and in the MSI-installed app.
-  // In dev mode, fall back to the public/ directory.
-  const iconPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'icon.png')
-    : path.join(__dirname, '../public/icon.png');
+  // When packaged, electron-builder copies icon.ico and icon.png into the Resources folder via extraResources.
+  // On Windows, use icon.ico for native taskbar, window titlebar, and Alt-Tab icon resolution.
+  let iconPath: string;
+  if (app.isPackaged) {
+    const ico = path.join(process.resourcesPath, 'icon.ico');
+    const png = path.join(process.resourcesPath, 'icon.png');
+    iconPath = fs.existsSync(ico) ? ico : png;
+  } else {
+    const ico = path.join(__dirname, '../public/icon.ico');
+    const png = path.join(__dirname, '../public/icon.png');
+    iconPath = fs.existsSync(ico) ? ico : png;
+  }
 
   win = new BrowserWindow({
     width: 1440,
@@ -83,7 +126,10 @@ app.on('activate', () => {
   }
 });
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  cleanupDownloadedUpdates();
+  createWindow();
+});
 
 // IPC Handlers
 ipcMain.handle('pivot:getDefaultTemplate', () => {
@@ -429,10 +475,21 @@ ipcMain.handle('updater:download', async () => {
 
 ipcMain.handle('updater:quit-and-install', () => {
   if (downloadedInstallerPath && fs.existsSync(downloadedInstallerPath)) {
-    if (downloadedInstallerPath.endsWith('.msi')) {
-      spawn('msiexec.exe', ['/i', downloadedInstallerPath], { detached: true, stdio: 'ignore' }).unref();
+    const installerPath = downloadedInstallerPath;
+    if (installerPath.endsWith('.msi')) {
+      // Run msiexec and automatically delete installer once msiexec finishes
+      spawn('cmd.exe', ['/c', 'msiexec.exe', '/i', `"${installerPath}"`, '&&', 'del', '/f', '/q', `"${installerPath}"`], {
+        detached: true,
+        stdio: 'ignore',
+        shell: true,
+      }).unref();
     } else {
-      spawn(downloadedInstallerPath, [], { detached: true, stdio: 'ignore' }).unref();
+      // Run NSIS/exe installer with start /wait, and delete installer once installation finishes
+      spawn('cmd.exe', ['/c', 'start', '/wait', '""', `"${installerPath}"`, '&&', 'del', '/f', '/q', `"${installerPath}"`], {
+        detached: true,
+        stdio: 'ignore',
+        shell: true,
+      }).unref();
     }
     app.quit();
   } else {
