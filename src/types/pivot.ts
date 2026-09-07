@@ -91,6 +91,7 @@ export interface PivotTemplate {
   columnOrder?: string[];
   wrapHeaders?: boolean;
   freezeFirstColumn?: boolean;
+  customRowOrder?: Record<string, string[]>;
 }
 
 export interface PivotHierarchyNode {

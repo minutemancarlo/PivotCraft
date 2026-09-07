@@ -57,6 +57,7 @@ export const App: React.FC = () => {
         columnOrder: [],
         wrapHeaders: false,
         freezeFirstColumn: true,
+        customRowOrder: undefined,
       };
     }
     return {
@@ -74,6 +75,7 @@ export const App: React.FC = () => {
       columnOrder: Array.isArray(raw.columnOrder) ? raw.columnOrder : [],
       wrapHeaders: !!raw.wrapHeaders,
       freezeFirstColumn: raw.freezeFirstColumn !== undefined ? !!raw.freezeFirstColumn : true,
+      customRowOrder: raw.customRowOrder && typeof raw.customRowOrder === 'object' ? raw.customRowOrder : undefined,
     };
   };
 
@@ -94,7 +96,7 @@ export const App: React.FC = () => {
   const [currentTemplateFile, setCurrentTemplateFile] = useState<{ fileName: string; filePath: string } | null>(null);
 
   // Auto-Updater State
-  const [currentVersion, setCurrentVersion] = useState<string>('1.0.1');
+  const [currentVersion, setCurrentVersion] = useState<string>('1.0.5');
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
   const [updateStatus, setUpdateStatus] = useState<'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'>('not-available');
@@ -945,6 +947,118 @@ export const App: React.FC = () => {
     setStatusMessage('Repositioned columns.');
   };
 
+  // Sibling Row Reordering within parent group
+  const handleReorderRows = (
+    draggedNodeId: string,
+    targetNodeId: string,
+    dropPosition: 'before' | 'after'
+  ) => {
+    if (!template || allNodes.length === 0 || draggedNodeId === targetNodeId) return;
+
+    // Create shallow clone map of nodes
+    const nodeMap = new Map<string, PivotHierarchyNode>();
+    for (const n of allNodes) nodeMap.set(n.id, n);
+
+    const draggedNode = nodeMap.get(draggedNodeId);
+    const targetNode = nodeMap.get(targetNodeId);
+    if (!draggedNode || !targetNode || draggedNode.isGrandTotal || targetNode.isGrandTotal) return;
+
+    // Enforce sibling-only reordering (must share the same parent)
+    if (draggedNode.parentId !== targetNode.parentId) {
+      showToast('warning', 'Reorder Restricted', 'Rows can only be reordered within the same parent group.');
+      return;
+    }
+
+    const parentId = draggedNode.parentId;
+    let siblingNodes: PivotHierarchyNode[] = [];
+
+    if (parentId) {
+      const parent = nodeMap.get(parentId);
+      if (!parent || !parent.children) return;
+      siblingNodes = parent.children;
+    } else {
+      // Level 1 root nodes
+      siblingNodes = allNodes.filter((n) => n.level === 1 && !n.isGrandTotal);
+    }
+
+    const fromIdx = siblingNodes.findIndex((n) => n.id === draggedNodeId);
+    const toIdx = siblingNodes.findIndex((n) => n.id === targetNodeId);
+    if (fromIdx === -1 || toIdx === -1) return;
+
+    // Reorder sibling array
+    const updatedSiblings = [...siblingNodes];
+    const [moved] = updatedSiblings.splice(fromIdx, 1);
+    let insertIdx = updatedSiblings.findIndex((n) => n.id === targetNodeId);
+    if (dropPosition === 'after') {
+      insertIdx += 1;
+    }
+    updatedSiblings.splice(insertIdx, 0, moved);
+
+    // Persist customRowOrder in template
+    const parentKey = parentId ? (nodeMap.get(parentId)?.fullPath || parentId) : 'root';
+    const newOrderList = updatedSiblings.map((s) => s.groupValue);
+    const updatedCustomRowOrder = {
+      ...(template.customRowOrder || {}),
+      [parentKey]: newOrderList,
+    };
+
+    const updatedTemplate: PivotTemplate = {
+      ...template,
+      customRowOrder: updatedCustomRowOrder,
+    };
+
+    // Update the parent's children or root nodes
+    if (parentId) {
+      const parent = nodeMap.get(parentId);
+      if (parent) {
+        parent.children = updatedSiblings;
+      }
+    }
+
+    // Preorder traversal to rebuild allNodes
+    const rootNodes = parentId
+      ? allNodes.filter((n) => n.level === 1 && !n.isGrandTotal)
+      : updatedSiblings;
+
+    const newAllNodes: PivotHierarchyNode[] = [];
+    const traverse = (curr: PivotHierarchyNode) => {
+      newAllNodes.push(curr);
+      if (curr.children && curr.children.length > 0) {
+        for (const child of curr.children) {
+          traverse(child);
+        }
+      }
+    };
+
+    for (const root of rootNodes) {
+      traverse(root);
+    }
+
+    const grandTotalNode = allNodes.find((n) => n.isGrandTotal);
+    if (grandTotalNode) {
+      newAllNodes.push(grandTotalNode);
+    }
+
+    setTemplate(updatedTemplate);
+    setAllNodes(newAllNodes);
+    setVisibleNodes(computeVisibleNodes(newAllNodes));
+    setStatusMessage(`Reordered "${draggedNode.displayText}" ${dropPosition} "${targetNode.displayText}".`);
+  };
+
+  const handleResetRowOrder = () => {
+    if (!template) return;
+    const updatedTemplate: PivotTemplate = {
+      ...template,
+      customRowOrder: undefined,
+    };
+    setTemplate(updatedTemplate);
+    if (rowCount > 0 && updatedTemplate.rowHierarchy.length > 0) {
+      executePivot(updatedTemplate);
+    }
+    setStatusMessage('Custom row order reset to default.');
+    showToast('info', 'Row Order Reset', 'Restored default hierarchy sorting order.');
+  };
+
   const handleUpdateTemplate = (newTemplate: PivotTemplate) => {
     setTemplate(newTemplate);
     if (newTemplate.rowHierarchy.length > 0) {
@@ -1278,6 +1392,8 @@ export const App: React.FC = () => {
                 onSortByColumn={handleSortByColumn}
                 onReorderColumns={handleReorderColumns}
                 onToggleFreezeFirstColumn={handleToggleFreezeFirstColumn}
+                onReorderRows={handleReorderRows}
+                onResetRowOrder={handleResetRowOrder}
                 onLoadCsv={handleLoadCsv}
                 onLoadTemplate={handleLoadTemplate}
                 onOpenPivotStudio={() => setIsFieldListOpen(true)}

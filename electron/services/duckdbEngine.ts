@@ -584,13 +584,41 @@ export class DuckDbPivotEngine {
     // Sort hierarchy nodes recursively
     const sortChildrenRecursively = (parentNode: PivotHierarchyNode) => {
       if (!parentNode.children || parentNode.children.length === 0) return;
-      const childLevelIdx = parentNode.level; // index in template.rowHierarchy
-      const childSort = template.rowHierarchy[childLevelIdx]?.sortOrder || 'Ascending';
-      parentNode.children.sort((a, b) => this.compareHierarchyValues(a.groupValue, b.groupValue, childSort));
+      const customOrder = template.customRowOrder?.[parentNode.fullPath || 'root'];
+      if (customOrder && customOrder.length > 0) {
+        parentNode.children.sort((a, b) => {
+          const idxA = customOrder.indexOf(a.groupValue);
+          const idxB = customOrder.indexOf(b.groupValue);
+          if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+          if (idxA !== -1) return -1;
+          if (idxB !== -1) return 1;
+          return this.compareHierarchyValues(a.groupValue, b.groupValue, 'Ascending');
+        });
+      } else {
+        const childLevelIdx = parentNode.level; // index in template.rowHierarchy
+        const childSort = template.rowHierarchy[childLevelIdx]?.sortOrder || 'Ascending';
+        parentNode.children.sort((a, b) => this.compareHierarchyValues(a.groupValue, b.groupValue, childSort));
+      }
       for (const child of parentNode.children) {
         sortChildrenRecursively(child);
       }
     };
+
+    // Sort rootNodes (Level 1)
+    const rootCustomOrder = template.customRowOrder?.['root'];
+    if (rootCustomOrder && rootCustomOrder.length > 0) {
+      rootNodes.sort((a, b) => {
+        const idxA = rootCustomOrder.indexOf(a.groupValue);
+        const idxB = rootCustomOrder.indexOf(b.groupValue);
+        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+        if (idxA !== -1) return -1;
+        if (idxB !== -1) return 1;
+        return this.compareHierarchyValues(a.groupValue, b.groupValue, 'Ascending');
+      });
+    } else {
+      const rootSort = template.rowHierarchy[0]?.sortOrder || 'Ascending';
+      rootNodes.sort((a, b) => this.compareHierarchyValues(a.groupValue, b.groupValue, rootSort));
+    }
 
     for (const root of rootNodes) {
       sortChildrenRecursively(root);

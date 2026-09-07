@@ -17,6 +17,7 @@ import {
   GripVertical,
   WrapText,
   Pin,
+  RotateCcw,
 } from 'lucide-react';
 import { PivotTemplate, PivotHierarchyNode, ColumnStyle, HeaderGroupDefinition } from '../types/pivot.js';
 import { RenameModal } from './RenameModal.js';
@@ -35,6 +36,8 @@ interface HierarchicalPivotGridProps {
   onSortByColumn: (columnKey: string) => void;
   onReorderColumns?: (newOrder: string[]) => void;
   onToggleFreezeFirstColumn?: () => void;
+  onReorderRows?: (draggedNodeId: string, targetNodeId: string, dropPosition: 'before' | 'after') => void;
+  onResetRowOrder?: () => void;
   onLoadCsv: () => void;
   onLoadTemplate: () => void;
   onOpenPivotStudio: () => void;
@@ -55,6 +58,8 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
   onSortByColumn,
   onReorderColumns,
   onToggleFreezeFirstColumn,
+  onReorderRows,
+  onResetRowOrder,
   onLoadCsv,
   onLoadTemplate,
   onOpenPivotStudio,
@@ -74,6 +79,11 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
   const [draggedColKey, setDraggedColKey] = useState<string | null>(null);
   const [dragOverColKey, setDragOverColKey] = useState<string | null>(null);
   const [dropPosition, setDropPosition] = useState<'left' | 'right'>('left');
+
+  // Row drag and drop repositioning state (siblings only)
+  const [draggedRowId, setDraggedRowId] = useState<string | null>(null);
+  const [dragOverRowId, setDragOverRowId] = useState<string | null>(null);
+  const [rowDropPosition, setRowDropPosition] = useState<'before' | 'after'>('before');
 
   const startResize = (e: React.MouseEvent, key: string, currentW: number) => {
     e.preventDefault();
@@ -712,6 +722,21 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
                           </span>
                         </button>
 
+                        {template?.customRowOrder && Object.keys(template.customRowOrder).length > 0 && (
+                          <button
+                            onClick={() => {
+                              onResetRowOrder?.();
+                              setActiveMenuKey(null);
+                            }}
+                            className={`w-full text-left px-3 py-1.5 flex items-center space-x-2 cursor-pointer ${
+                              isDark ? 'hover:bg-slate-800 text-rose-400' : 'hover:bg-slate-100 text-rose-600'
+                            }`}
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>Reset Custom Row Order</span>
+                          </button>
+                        )}
+
                         <div className={`h-[1px] my-1 ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`} />
                         <div className={`px-3 py-1 text-[10px] font-bold uppercase tracking-wider ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
                           Cell Styling & Aesthetics
@@ -1260,6 +1285,8 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
               const isGrandTotal = node.isGrandTotal;
               const isSubtotal = node.isSubtotal;
               const indentPx = Math.max(0, node.level - 1) * 20;
+              const isBeingDraggedRow = draggedRowId === node.id;
+              const isDragOverRow = dragOverRowId === node.id && !isBeingDraggedRow;
 
               const hierColStyle = template.columnStyles?.['hierarchy'] || {};
               let hierDisplayText = node.displayText;
@@ -1279,7 +1306,46 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
                     height: `${virtualRow.size}px`,
                     transform: `translateY(${virtualRow.start}px)`,
                   }}
-                  className={`flex items-center pr-4 text-xs border-b transition-colors ${
+                  onDragOver={(e) => {
+                    if (!draggedRowId || draggedRowId === node.id || node.isGrandTotal) return;
+                    const draggedNode = visibleNodes.find((n) => n.id === draggedRowId);
+                    if (!draggedNode || draggedNode.parentId !== node.parentId) return;
+
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const nextPos = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+                    if (dragOverRowId !== node.id || rowDropPosition !== nextPos) {
+                      setDragOverRowId(node.id);
+                      setRowDropPosition(nextPos);
+                    }
+                  }}
+                  onDragLeave={(e) => {
+                    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                    if (dragOverRowId === node.id) {
+                      setDragOverRowId(null);
+                    }
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (draggedRowId && draggedRowId !== node.id && !node.isGrandTotal) {
+                      const draggedNode = visibleNodes.find((n) => n.id === draggedRowId);
+                      if (draggedNode && draggedNode.parentId === node.parentId) {
+                        onReorderRows?.(draggedRowId, node.id, rowDropPosition);
+                      }
+                    }
+                    setDraggedRowId(null);
+                    setDragOverRowId(null);
+                  }}
+                  className={`group flex items-center pr-4 text-xs border-b transition-colors ${
+                    isBeingDraggedRow ? 'opacity-30 bg-sky-500/10' : ''
+                  } ${
+                    isDragOverRow
+                      ? rowDropPosition === 'before'
+                        ? 'border-t-2 border-t-sky-500 bg-sky-500/10'
+                        : 'border-b-2 border-b-sky-500 bg-sky-500/10'
+                      : ''
+                  } ${
                   isGrandTotal
                     ? isDark
                       ? 'bg-slate-800/95 font-bold text-slate-100 border-t-2 border-slate-600 border-b-2 border-slate-700 shadow-sm'
@@ -1321,6 +1387,25 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
                       : isDark ? 'border-slate-800/40' : 'border-slate-200'
                   }`}
                 >
+                  {!node.isGrandTotal && (
+                    <div
+                      draggable={!editingCell}
+                      onDragStart={(e) => {
+                        e.stopPropagation();
+                        e.dataTransfer.setData('text/plain', node.id);
+                        e.dataTransfer.effectAllowed = 'move';
+                        setDraggedRowId(node.id);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedRowId(null);
+                        setDragOverRowId(null);
+                      }}
+                      className="cursor-grab active:cursor-grabbing p-0.5 -ml-1 text-slate-400/40 hover:text-sky-400 shrink-0 transition opacity-0 group-hover:opacity-100"
+                      title="Drag to reorder row within parent"
+                    >
+                      <GripVertical className="w-3.5 h-3.5" />
+                    </div>
+                  )}
                   {!node.isLeaf && !isGrandTotal ? (
                     <button
                       onClick={() => onToggleNode(node.id)}

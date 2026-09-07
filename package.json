@@ -1,7 +1,7 @@
 {
   "name": "PivotCraft",
   "productName": "PivotCraft",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "author": "PivotCraft",
   "description": "High-Performance Vectorized CSV Pivot Engine & Excel Template Studio",
   "main": "dist-electron/main.js",
@@ -62,8 +62,18 @@
     ],
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "msi", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "msi",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "icon": "public/icon.ico",
       "executableName": "PivotCraft"
