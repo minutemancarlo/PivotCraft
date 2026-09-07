@@ -12,7 +12,7 @@ import {
   Edit2,
   Check,
 } from 'lucide-react';
-import { PivotTemplate, HierarchyDefinition, ValueMetricDefinition, CalculatedFieldDefinition, FilterDefinition, HeaderGroupDefinition } from '../types/pivot.js';
+import { PivotTemplate, HierarchyDefinition, ValueMetricDefinition, CalculatedFieldDefinition, FilterDefinition, HeaderGroupDefinition, resolveTotalMode } from '../types/pivot.js';
 
 interface PivotFieldListProps {
   isOpen: boolean;
@@ -51,6 +51,7 @@ export const PivotFieldList: React.FC<PivotFieldListProps> = ({
   const [calcIsAlreadyPercent, setCalcIsAlreadyPercent] = useState<boolean>(false);
   const [calcIsEditable, setCalcIsEditable] = useState<boolean>(false);
   const [calcShowTotal, setCalcShowTotal] = useState<boolean>(true);
+  const [calcTotalMode, setCalcTotalMode] = useState<'sum' | 'formula' | 'avg' | 'min' | 'max'>('sum');
   const [editingCalcIdx, setEditingCalcIdx] = useState<number | null>(null);
   const [editCalcName, setEditCalcName] = useState('');
   const [editCalcFormula, setEditCalcFormula] = useState('');
@@ -59,6 +60,7 @@ export const PivotFieldList: React.FC<PivotFieldListProps> = ({
   const [editCalcIsAlreadyPercent, setEditCalcIsAlreadyPercent] = useState<boolean>(false);
   const [editCalcIsEditable, setEditCalcIsEditable] = useState<boolean>(false);
   const [editCalcShowTotal, setEditCalcShowTotal] = useState<boolean>(true);
+  const [editCalcTotalMode, setEditCalcTotalMode] = useState<'sum' | 'formula' | 'avg' | 'min' | 'max'>('sum');
 
   // Header Bands (Super-Headers) State
   const [bandLabel, setBandLabel] = useState('');
@@ -215,6 +217,7 @@ export const PivotFieldList: React.FC<PivotFieldListProps> = ({
       isAlreadyPercent: calcIsAlreadyPercent,
       isEditable: isManualInputOnly ? true : calcIsEditable,
       showTotal: calcShowTotal,
+      totalMode: calcTotalMode,
     };
 
     const currentStyles = columnStyles;
@@ -232,6 +235,7 @@ export const PivotFieldList: React.FC<PivotFieldListProps> = ({
     setCalcIsAlreadyPercent(false);
     setCalcIsEditable(false);
     setCalcShowTotal(true);
+    setCalcTotalMode('sum');
   };
 
   const handleStartEditCalc = (idx: number) => {
@@ -245,6 +249,7 @@ export const PivotFieldList: React.FC<PivotFieldListProps> = ({
     setEditCalcIsAlreadyPercent(!!c.isAlreadyPercent);
     setEditCalcIsEditable(!!c.isEditable);
     setEditCalcShowTotal(c.showTotal !== false && (columnStyles[c.alias || c.name]?.showTotal !== false));
+    setEditCalcTotalMode(c.totalMode || resolveTotalMode(c));
   };
 
   const handleSaveEditCalc = (idx: number) => {
@@ -262,6 +267,7 @@ export const PivotFieldList: React.FC<PivotFieldListProps> = ({
       isAlreadyPercent: editCalcIsAlreadyPercent,
       isEditable: isManualInputOnly ? true : editCalcIsEditable,
       showTotal: editCalcShowTotal,
+      totalMode: editCalcTotalMode,
     };
     const currentStyles = columnStyles;
     onUpdateTemplate({
@@ -1020,7 +1026,15 @@ export const PivotFieldList: React.FC<PivotFieldListProps> = ({
                           <label className={`block text-[10px] mb-1 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Format:</label>
                           <select
                             value={editCalcFormat}
-                            onChange={(e) => setEditCalcFormat(e.target.value)}
+                            onChange={(e) => {
+                              const fmt = e.target.value;
+                              setEditCalcFormat(fmt);
+                              if (fmt.includes('%') || fmt === '0.0%') {
+                                setEditCalcTotalMode('formula');
+                              } else {
+                                setEditCalcTotalMode('sum');
+                              }
+                            }}
                             className={`w-full border rounded px-2 py-1 text-xs outline-none ${inputBg}`}
                           >
                             <option value="#,##0">Number (#,##0)</option>
@@ -1049,6 +1063,23 @@ export const PivotFieldList: React.FC<PivotFieldListProps> = ({
                             <option value={6}>6 (1234.567890)</option>
                           </select>
                         </div>
+                      </div>
+
+                      <div>
+                        <label className={`block text-[10px] mb-1 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>
+                          Total & Subtotal Computation:
+                        </label>
+                        <select
+                          value={editCalcTotalMode}
+                          onChange={(e) => setEditCalcTotalMode(e.target.value as any)}
+                          className={`w-full border rounded px-2 py-1 text-xs outline-none ${inputBg}`}
+                        >
+                          <option value="sum">Sum of Rows (Amounts / Currencies)</option>
+                          <option value="formula">Re-evaluate Formula (Ratios / Percentages)</option>
+                          <option value="avg">Average of Rows</option>
+                          <option value="min">Minimum of Rows</option>
+                          <option value="max">Maximum of Rows</option>
+                        </select>
                       </div>
 
                       {/* Percentage Multiplier option in edit */}
@@ -1235,7 +1266,15 @@ export const PivotFieldList: React.FC<PivotFieldListProps> = ({
                   <label className={`block text-[10px] mb-1 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Format:</label>
                   <select
                     value={calcFormat}
-                    onChange={(e) => setCalcFormat(e.target.value)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setCalcFormat(val);
+                      if (val.includes('%')) {
+                        setCalcTotalMode('formula');
+                      } else {
+                        setCalcTotalMode('sum');
+                      }
+                    }}
                     className={`w-full border rounded px-2.5 py-1 text-xs outline-none ${inputBg}`}
                   >
                     <option value="#,##0">Number (#,##0)</option>
@@ -1264,6 +1303,23 @@ export const PivotFieldList: React.FC<PivotFieldListProps> = ({
                     <option value={6}>6 (1234.567890)</option>
                   </select>
                 </div>
+              </div>
+
+              <div>
+                <label className={`block text-[10px] mb-1 font-semibold ${isDark ? 'text-amber-400' : 'text-amber-700'}`}>
+                  Total & Subtotal Computation:
+                </label>
+                <select
+                  value={calcTotalMode}
+                  onChange={(e) => setCalcTotalMode(e.target.value as any)}
+                  className={`w-full border rounded px-2.5 py-1 text-xs outline-none ${inputBg}`}
+                >
+                  <option value="sum">Sum of Rows (Amounts / Currencies)</option>
+                  <option value="formula">Re-evaluate Formula (Ratios / Percentages)</option>
+                  <option value="avg">Average of Rows</option>
+                  <option value="min">Minimum of Rows</option>
+                  <option value="max">Maximum of Rows</option>
+                </select>
               </div>
 
               {/* Percentage Multiplier option in add */}

@@ -1,9 +1,13 @@
 import React from 'react';
-import { Zap, Database, Layers, Sun, Moon, ArrowUpCircle, RefreshCw } from 'lucide-react';
+import { Zap, Database, Layers, Sun, Moon, ArrowUpCircle, RefreshCw, Archive } from 'lucide-react';
 import appIcon from '../../public/icon.png';
 
 interface HeaderProps {
   templateName: string;
+  templateFileName?: string | null;
+  templateFilePath?: string | null;
+  pvcFileName?: string | null;
+  pvcFilePath?: string | null;
   rowCount: number;
   latencyMs: number;
   theme: 'dark' | 'light';
@@ -16,6 +20,10 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({
   templateName,
+  templateFileName,
+  templateFilePath,
+  pvcFileName,
+  pvcFilePath,
   rowCount,
   latencyMs,
   theme,
@@ -59,15 +67,57 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       <div className="flex items-center space-x-2.5">
+        {/* Active Workbook (.pvc) Badge / Chip */}
+        {pvcFileName && (
+          <div
+            title={`Active PivotCraft Workbook File: ${pvcFilePath || pvcFileName}`}
+            className={`border rounded-lg px-2.5 py-1 flex items-center space-x-1.5 text-xs transition shadow-xs ${
+              isDark
+                ? 'bg-indigo-950/50 border-indigo-500/50 text-indigo-300 hover:border-indigo-400'
+                : 'bg-indigo-50/90 border-indigo-200 text-indigo-900 shadow-xs hover:border-indigo-300'
+            }`}
+          >
+            <Archive className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+            <span className={isDark ? 'text-indigo-400 font-medium' : 'text-indigo-600 font-medium'}>Workbook:</span>
+            <span className="font-bold text-indigo-500 dark:text-indigo-300 truncate max-w-[170px]">
+              {pvcFileName}
+            </span>
+          </div>
+        )}
+
         {/* Template Badge */}
         <div
-          className={`border rounded-lg px-2.5 py-1 flex items-center space-x-1.5 text-xs ${
-            isDark ? 'bg-slate-800/80 border-slate-700/60' : 'bg-slate-50 border-slate-200'
+          title={
+            templateFileName
+              ? `Loaded Template File: ${templateFilePath || templateFileName}${templateName && templateName !== 'Custom Pivot' ? ` (Schema: ${templateName})` : ''}`
+              : `Active Template: ${templateName}`
+          }
+          className={`border rounded-lg px-2.5 py-1 flex items-center space-x-1.5 text-xs transition ${
+            templateFileName
+              ? isDark
+                ? 'bg-sky-950/40 border-sky-500/50 text-sky-200 shadow-xs'
+                : 'bg-sky-50 border-sky-300 text-sky-900 shadow-xs'
+              : isDark
+                ? 'bg-slate-800/80 border-slate-700/60'
+                : 'bg-slate-50 border-slate-200'
           }`}
         >
-          <Layers className="w-3.5 h-3.5 text-slate-400" />
+          <Layers className={`w-3.5 h-3.5 shrink-0 ${templateFileName ? 'text-sky-500' : 'text-slate-400'}`} />
           <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>Template:</span>
-          <span className="font-semibold text-sky-500 truncate max-w-[160px]">{templateName}</span>
+          <span className="font-semibold text-sky-500 truncate max-w-[170px]">
+            {templateFileName || templateName}
+          </span>
+          {templateFileName && (
+            <span
+              className={`text-[9px] px-1 py-0.2 rounded font-mono font-bold uppercase tracking-wider ${
+                isDark
+                  ? 'bg-sky-900/60 text-sky-300 border border-sky-700/60'
+                  : 'bg-sky-100 text-sky-800 border border-sky-200'
+              }`}
+            >
+              JSON
+            </span>
+          )}
         </div>
 
         {/* Rows Badge */}

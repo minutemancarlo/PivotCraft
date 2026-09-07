@@ -8,6 +8,7 @@ interface RawDataGridProps {
   onOpenPivotStudio: () => void;
   theme?: 'dark' | 'light';
   isWrapHeaders?: boolean;
+  isFreezeFirstColumn?: boolean;
 }
 
 export const RawDataGrid: React.FC<RawDataGridProps> = ({
@@ -16,6 +17,7 @@ export const RawDataGrid: React.FC<RawDataGridProps> = ({
   onOpenPivotStudio,
   theme = 'light',
   isWrapHeaders = false,
+  isFreezeFirstColumn = true,
 }) => {
   const isDark = theme === 'dark';
   const [rows, setRows] = useState<any[]>([]);
@@ -189,8 +191,9 @@ export const RawDataGrid: React.FC<RawDataGridProps> = ({
   }, []);
 
   const totalPages = Math.ceil(totalRows / pageSize);
+  const indexColWidth = 64;
   const totalColsWidth = orderedColumns.reduce((sum, col) => sum + (colWidths[col] || 160), 0);
-  const totalGridWidth = 56 + totalColsWidth + 32;
+  const totalGridWidth = indexColWidth + totalColsWidth + 16;
 
   const handleRawDrop = (targetCol: string) => {
     if (!draggedRawCol || draggedRawCol === targetCol) {
@@ -299,21 +302,25 @@ export const RawDataGrid: React.FC<RawDataGridProps> = ({
           {/* Sticky Grid Headers */}
           <div
             style={{ minWidth: `${totalGridWidth}px` }}
-            className={`border-b ${isWrapHeaders ? 'flex items-stretch min-h-[36px] h-auto py-0' : 'flex items-center h-9'} px-4 text-xs font-bold sticky top-0 z-10 shadow-sm transition-colors ${
+            className={`border-b ${isWrapHeaders ? 'flex items-stretch min-h-[36px] h-auto py-0' : 'flex items-center h-9'} pr-4 text-xs font-bold sticky top-0 z-10 shadow-sm transition-colors ${
               isDark ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-slate-100 border-slate-300 text-slate-800'
             }`}
           >
             <div
-              className={`w-14 min-w-[56px] pr-2 border-r ${isWrapHeaders ? 'py-2 flex items-start' : ''} ${
-                isDark ? 'text-slate-500 border-slate-800/80' : 'text-slate-400 border-slate-300'
+              style={{ width: `${indexColWidth}px`, minWidth: `${indexColWidth}px`, maxWidth: `${indexColWidth}px` }}
+              className={`pl-4 pr-2 border-r ${isWrapHeaders ? 'py-2 flex items-start' : 'flex items-center'} shrink-0 ${
+                isFreezeFirstColumn ? 'sticky left-0 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.15)]' : ''
+              } ${
+                isDark ? 'bg-slate-900 text-slate-500 border-slate-800/80' : 'bg-slate-100 text-slate-400 border-slate-300'
               }`}
             >
               #
             </div>
-            {orderedColumns.map((col) => {
+            {orderedColumns.map((col, colIdx) => {
               const colW = colWidths[col] || 160;
               const isBeingDragged = draggedRawCol === col;
               const isDragOver = dragOverRawCol === col && !isBeingDragged;
+              const isFirstCol = colIdx === 0 && isFreezeFirstColumn;
 
               return (
                 <div
@@ -346,10 +353,19 @@ export const RawDataGrid: React.FC<RawDataGridProps> = ({
                     setDraggedRawCol(null);
                     setDragOverRawCol(null);
                   }}
-                  style={{ width: `${colW}px`, minWidth: `${colW}px`, maxWidth: `${colW}px` }}
+                  style={{
+                    width: `${colW}px`,
+                    minWidth: `${colW}px`,
+                    maxWidth: `${colW}px`,
+                    ...(isFirstCol ? { left: `${indexColWidth}px` } : {}),
+                  }}
                   onClick={() => handleSort(col)}
-                  className={`px-2 flex ${isWrapHeaders ? 'items-start py-2' : 'items-center'} justify-between border-r cursor-grab active:cursor-grabbing transition-all group relative select-none font-bold ${
-                    isDark ? 'border-slate-800/80 hover:bg-slate-800/60' : 'border-slate-300 hover:bg-slate-200/60'
+                  className={`px-2 flex ${isWrapHeaders ? 'items-start py-2' : 'items-center'} justify-between border-r cursor-grab active:cursor-grabbing transition-all group relative select-none font-bold shrink-0 ${
+                    isFirstCol ? 'sticky z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.15)]' : ''
+                  } ${
+                    isDark
+                      ? `${isFirstCol ? 'bg-slate-900' : ''} border-slate-800/80 hover:bg-slate-800/60`
+                      : `${isFirstCol ? 'bg-slate-100' : ''} border-slate-300 hover:bg-slate-200/60`
                   } ${
                     isBeingDragged ? 'opacity-30 bg-sky-500/10 border-dashed border-sky-400' : ''
                   } ${
@@ -406,20 +422,23 @@ export const RawDataGrid: React.FC<RawDataGridProps> = ({
                     height: `${virtualRow.size}px`,
                     transform: `translateY(${virtualRow.start}px)`,
                   }}
-                  className={`flex items-center px-4 text-xs border-b transition-colors font-mono ${
+                  className={`group flex items-center pr-4 text-xs border-b transition-colors font-mono ${
                     isDark
                       ? 'border-slate-800/50 hover:bg-slate-900/60 text-slate-300'
                       : 'border-slate-200 hover:bg-slate-50 text-slate-700'
                   }`}
                 >
                   <div
-                    className={`w-14 min-w-[56px] text-[11px] pr-2 border-r ${
-                      isDark ? 'text-slate-500 border-slate-800/40' : 'text-slate-400 border-slate-200'
+                    style={{ width: `${indexColWidth}px`, minWidth: `${indexColWidth}px`, maxWidth: `${indexColWidth}px` }}
+                    className={`pl-4 pr-2 text-[11px] border-r flex items-center shrink-0 ${
+                      isFreezeFirstColumn ? 'sticky left-0 z-20 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)]' : ''
+                    } ${
+                      isDark ? 'bg-slate-950 group-hover:bg-slate-900 border-slate-800/40 text-slate-500' : 'bg-white group-hover:bg-slate-50 border-slate-200 text-slate-400'
                     }`}
                   >
                     {globalRowIdx}
                   </div>
-                  {orderedColumns.map((col) => {
+                  {orderedColumns.map((col, colIdx) => {
                     const val = row[col];
                     const isNum = typeof val === 'number' || (typeof val === 'string' && val.trim() !== '' && !isNaN(Number(val)));
                     const numVal = isNum ? Number(val) : NaN;
@@ -431,15 +450,25 @@ export const RawDataGrid: React.FC<RawDataGridProps> = ({
                     }
 
                     const colW = colWidths[col] || 160;
+                    const isFirstCol = colIdx === 0 && isFreezeFirstColumn;
 
                     return (
                       <div
                         key={col}
-                        style={{ width: `${colW}px`, minWidth: `${colW}px` }}
-                        className={`px-3 truncate border-r ${
+                        style={{
+                          width: `${colW}px`,
+                          minWidth: `${colW}px`,
+                          maxWidth: `${colW}px`,
+                          ...(isFirstCol ? { left: `${indexColWidth}px` } : {}),
+                        }}
+                        className={`px-3 truncate border-r shrink-0 ${
                           isNum ? 'text-right' : 'text-left'
                         } ${
-                          isDark ? 'border-slate-800/40' : 'border-slate-200'
+                          isFirstCol ? 'sticky z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)]' : ''
+                        } ${
+                          isFirstCol
+                            ? (isDark ? 'bg-slate-950 group-hover:bg-slate-900 border-slate-800/40' : 'bg-white group-hover:bg-slate-50 border-slate-200')
+                            : (isDark ? 'border-slate-800/40' : 'border-slate-200')
                         } ${isNegative ? (isDark ? 'text-rose-400 font-semibold' : 'text-rose-600 font-semibold') : ''}`}
                       >
                         {display}

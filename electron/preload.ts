@@ -1,17 +1,22 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { PivotTemplate } from '../src/types/pivot.js';
+import { PivotTemplate, PivotCraftProject } from '../src/types/pivot.js';
 
 export const electronAPI = {
   getDefaultTemplate: (): Promise<PivotTemplate> => ipcRenderer.invoke('pivot:getDefaultTemplate'),
-  loadCsv: (filePath?: string) => ipcRenderer.invoke('pivot:loadCsv', filePath),
+  loadCsv: (filePath?: string): Promise<{ filePath: string; rowCount: number; columns: any[]; latencyMs: number } | null> =>
+    ipcRenderer.invoke('pivot:loadCsv', filePath),
   getDistinctValues: (column: string, limit?: number): Promise<string[]> =>
     ipcRenderer.invoke('pivot:getDistinctValues', column, limit),
   getRawData: (offset?: number, limit?: number, sortColumn?: string, sortDir?: 'ASC' | 'DESC') =>
     ipcRenderer.invoke('pivot:getRawData', offset, limit, sortColumn, sortDir),
-  loadTemplate: () => ipcRenderer.invoke('pivot:loadTemplate'),
-  saveTemplate: (template: PivotTemplate) => ipcRenderer.invoke('pivot:saveTemplate', template),
-  saveProject: (payload: any) => ipcRenderer.invoke('pivot:saveProject', payload),
-  loadProject: () => ipcRenderer.invoke('pivot:loadProject'),
+  loadTemplate: (): Promise<{ filePath: string; template: PivotTemplate } | null> =>
+    ipcRenderer.invoke('pivot:loadTemplate'),
+  saveTemplate: (templateOrPayload: PivotTemplate | { template: PivotTemplate; defaultPath?: string }): Promise<{ filePath: string } | null> =>
+    ipcRenderer.invoke('pivot:saveTemplate', templateOrPayload),
+  saveProject: (payload: any): Promise<{ filePath: string } | null> =>
+    ipcRenderer.invoke('pivot:saveProject', payload),
+  loadProject: (): Promise<{ filePath: string; project: PivotCraftProject } | null> =>
+    ipcRenderer.invoke('pivot:loadProject'),
   executePivot: (template: PivotTemplate) => ipcRenderer.invoke('pivot:execute', template),
   exportExcel: (nodes: any[], template: PivotTemplate) => ipcRenderer.invoke('pivot:exportExcel', nodes, template),
   exportCsv: (nodes: any[], template: PivotTemplate) => ipcRenderer.invoke('pivot:exportCsv', nodes, template),

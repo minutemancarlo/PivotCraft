@@ -13,6 +13,7 @@ import {
   Archive,
   WrapText,
   RotateCcw,
+  Pin,
 } from 'lucide-react';
 
 interface ActionRibbonProps {
@@ -26,6 +27,8 @@ interface ActionRibbonProps {
   onClearAll: () => void;
   isWrapHeaders: boolean;
   onToggleWrapHeaders: () => void;
+  isFreezeFirstColumn?: boolean;
+  onToggleFreezeFirstColumn?: () => void;
   onToggleFieldList: () => void;
   onExpandAll: () => void;
   onCollapseAll: () => void;
@@ -49,6 +52,8 @@ export const ActionRibbon: React.FC<ActionRibbonProps> = ({
   onClearAll,
   isWrapHeaders,
   onToggleWrapHeaders,
+  isFreezeFirstColumn = true,
+  onToggleFreezeFirstColumn,
   onToggleFieldList,
   onExpandAll,
   onCollapseAll,
@@ -261,6 +266,35 @@ export const ActionRibbon: React.FC<ActionRibbonProps> = ({
               }`}
             >
               {isWrapHeaders ? 'ON' : 'OFF'}
+            </span>
+          </button>
+
+          {/* Freeze First Column Toggle */}
+          <button
+            onClick={onToggleFreezeFirstColumn}
+            title="Freeze Pane: Pin the First Column (Row Categories / #) horizontally while scrolling"
+            className={`text-xs font-medium px-2.5 py-1.5 rounded-md flex items-center space-x-1.5 transition cursor-pointer border ${
+              isFreezeFirstColumn
+                ? isDark
+                  ? 'bg-amber-950/50 border-amber-700/80 text-amber-300'
+                  : 'bg-amber-50 border-amber-300 text-amber-800 font-semibold'
+                : isDark
+                ? 'bg-transparent hover:bg-slate-800/80 border-transparent text-slate-400'
+                : 'bg-transparent hover:bg-slate-100 border-transparent text-slate-600'
+            }`}
+          >
+            <Pin className={`w-3.5 h-3.5 ${isFreezeFirstColumn ? 'text-amber-500 fill-amber-500/20' : 'text-slate-400'}`} />
+            <span>Freeze First Col</span>
+            <span
+              className={`text-[9px] px-1 py-0.2 rounded font-mono font-bold ${
+                isFreezeFirstColumn
+                  ? 'bg-amber-500/20 text-amber-600 dark:text-amber-300'
+                  : isDark
+                  ? 'bg-slate-800 text-slate-500'
+                  : 'bg-slate-200 text-slate-500'
+              }`}
+            >
+              {isFreezeFirstColumn ? 'ON' : 'OFF'}
             </span>
           </button>
 

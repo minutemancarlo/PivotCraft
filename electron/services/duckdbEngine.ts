@@ -1,6 +1,6 @@
 import { createRequire } from 'module';
 import { Parser } from 'expr-eval';
-import { PivotTemplate, PivotHierarchyNode, FilterDefinition, ValueMetricDefinition, CalculatedFieldDefinition } from '../../src/types/pivot.js';
+import { PivotTemplate, PivotHierarchyNode, FilterDefinition, ValueMetricDefinition, CalculatedFieldDefinition, resolveTotalMode } from '../../src/types/pivot.js';
 import { createConfiguredParser, preprocessFormula } from '../../src/utils/formulaEngine.js';
 
 const require = createRequire(import.meta.url);
@@ -334,10 +334,12 @@ export class DuckDbPivotEngine {
     const whereClause = this.buildWhereClause(resolvedFilters);
     const selectMetrics = this.buildSelectMetrics(resolvedValues);
 
+    const colExpr = (c: string) => `COALESCE(NULLIF(TRIM(CAST("${c.replace(/"/g, '""')}" AS VARCHAR)), ''), '(blanks)')`;
+
     // Grouping sets for multi-level hierarchical aggregation
     const groupingSets = ['()'];
     for (let i = 1; i <= rowCols.length; i++) {
-      const prefix = rowCols.slice(0, i).map((c) => `"${c.replace(/"/g, '""')}"`).join(', ');
+      const prefix = rowCols.slice(0, i).map((c) => colExpr(c)).join(', ');
       groupingSets.push(`(${prefix})`);
     }
 
@@ -346,12 +348,12 @@ export class DuckDbPivotEngine {
     // Sort ordering
     const orderItems = resolvedRowHierarchy.map((r) => {
       const dir = r.sortOrder === 'Descending' ? 'DESC' : 'ASC';
-      return `"${r.column.replace(/"/g, '""')}" ${dir} NULLS LAST`;
+      return `${colExpr(r.column)} ${dir} NULLS LAST`;
     });
     const orderClause = `ORDER BY ${orderItems.join(', ')}`;
 
     const selectRowCols = rowCols
-      .map((c, i) => `"${c.replace(/"/g, '""')}", GROUPING("${c.replace(/"/g, '""')}") AS "__grp_${i}"`)
+      .map((c, i) => `${colExpr(c)} AS "${c.replace(/"/g, '""')}", GROUPING(${colExpr(c)}) AS "__grp_${i}"`)
       .join(', ');
 
     const sql = `
@@ -401,6 +403,7 @@ export class DuckDbPivotEngine {
       let fullPath = 'Grand Total';
       let currentHierarchy = !isGrandTotal ? template.rowHierarchy[level - 1] : undefined;
 
+      let parentPath: string | null = null;
       if (!isGrandTotal && currentHierarchy) {
         groupField = currentHierarchy.alias || currentHierarchy.column;
         const rawGroupVal = rowValues[level - 1];
@@ -409,6 +412,13 @@ export class DuckDbPivotEngine {
           .slice(0, level)
           .map((v, i) => this.formatRowValue(v, template.rowHierarchy[i]?.format))
           .join(' > ');
+
+        if (level >= 2) {
+          parentPath = rowValues
+            .slice(0, level - 1)
+            .map((v, i) => this.formatRowValue(v, template.rowHierarchy[i]?.format))
+            .join(' > ');
+        }
       }
 
       const shouldAppendTotal = currentHierarchy ? currentHierarchy.appendTotalWord !== false : true;
@@ -435,6 +445,10 @@ export class DuckDbPivotEngine {
         editableOverrides: {},
         formattedValues: {},
       };
+
+      if (parentPath) {
+        nodeParentPathMap.set(node.id, parentPath);
+      }
 
       // Extract numeric values and apply optional formulaModifier
       for (const val of template.values) {
@@ -484,9 +498,8 @@ export class DuckDbPivotEngine {
 
     for (let l = 2; l <= rowCols.length; l++) {
       for (const child of nodesByLevel[l]) {
-        const pathParts = child.fullPath.split(' > ');
-        const parentPath = pathParts.slice(0, -1).join(' > ');
-        const parent = nodeMap.get(parentPath);
+        const parentPath = nodeParentPathMap.get(child.id);
+        const parent = parentPath ? nodeMap.get(parentPath) : undefined;
         if (parent) {
           child.parentId = parent.id;
           parent.children.push(child);
@@ -495,6 +508,78 @@ export class DuckDbPivotEngine {
     }
 
     const rootNodes = nodesByLevel[1] || [];
+
+    // Bottom-up pass for calculated fields on subtotals and Grand Total
+    const getEffectiveCalcVal = (n: PivotHierarchyNode, calcKey: string): number => {
+      const v = n.calculatedValues[calcKey];
+      if (typeof v === 'number') return isFinite(v) && !isNaN(v) ? v : 0;
+      if (v !== null && v !== undefined && v !== '' && v !== '-') {
+        const parsed = Number(v);
+        if (!isNaN(parsed) && isFinite(parsed)) return parsed;
+      }
+      return 0;
+    };
+
+    for (let l = rowCols.length - 1; l >= 1; l--) {
+      for (const parent of nodesByLevel[l]) {
+        if (!parent.children || parent.children.length === 0) continue;
+        for (const calc of template.calculatedFields || []) {
+          const key = calc.alias || calc.name;
+          const mode = resolveTotalMode(calc);
+
+          if (mode === 'sum') {
+            const sum = parent.children.reduce((acc, c) => acc + getEffectiveCalcVal(c, key), 0);
+            parent.calculatedValues[key] = sum;
+            parent.formattedValues[key] = this.formatValue(sum, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+          } else if (mode === 'avg') {
+            const avg = parent.children.reduce((acc, c) => acc + getEffectiveCalcVal(c, key), 0) / (parent.children.length || 1);
+            parent.calculatedValues[key] = avg;
+            parent.formattedValues[key] = this.formatValue(avg, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+          } else if (mode === 'min') {
+            const min = Math.min(...parent.children.map((c) => getEffectiveCalcVal(c, key)));
+            parent.calculatedValues[key] = min;
+            parent.formattedValues[key] = this.formatValue(min, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+          } else if (mode === 'max') {
+            const max = Math.max(...parent.children.map((c) => getEffectiveCalcVal(c, key)));
+            parent.calculatedValues[key] = max;
+            parent.formattedValues[key] = this.formatValue(max, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+          } else if (mode === 'formula') {
+            this.evaluateCalculations(parent, [calc]);
+          }
+        }
+      }
+    }
+
+    if (grandTotalNode) {
+      for (const calc of template.calculatedFields || []) {
+        const key = calc.alias || calc.name;
+        const mode = resolveTotalMode(calc);
+
+        if (mode === 'sum') {
+          const sum = rootNodes.reduce((acc, r) => acc + getEffectiveCalcVal(r, key), 0);
+          grandTotalNode.calculatedValues[key] = sum;
+          grandTotalNode.formattedValues[key] = this.formatValue(sum, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+        } else if (mode === 'avg') {
+          const avg = rootNodes.reduce((acc, r) => acc + getEffectiveCalcVal(r, key), 0) / (rootNodes.length || 1);
+          grandTotalNode.calculatedValues[key] = avg;
+          grandTotalNode.formattedValues[key] = this.formatValue(avg, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+        } else if (mode === 'min') {
+          if (rootNodes.length > 0) {
+            const min = Math.min(...rootNodes.map((r) => getEffectiveCalcVal(r, key)));
+            grandTotalNode.calculatedValues[key] = min;
+            grandTotalNode.formattedValues[key] = this.formatValue(min, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+          }
+        } else if (mode === 'max') {
+          if (rootNodes.length > 0) {
+            const max = Math.max(...rootNodes.map((r) => getEffectiveCalcVal(r, key)));
+            grandTotalNode.calculatedValues[key] = max;
+            grandTotalNode.formattedValues[key] = this.formatValue(max, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+          }
+        } else if (mode === 'formula') {
+          this.evaluateCalculations(grandTotalNode, [calc]);
+        }
+      }
+    }
 
     // Sort hierarchy nodes recursively
     const sortChildrenRecursively = (parentNode: PivotHierarchyNode) => {
@@ -746,15 +831,21 @@ export class DuckDbPivotEngine {
       return 'COUNT(*) AS "Total_Count"';
     }
 
+    const safeCast = (col: string) => `(CASE 
+      WHEN TRIM(CAST(${col} AS VARCHAR)) LIKE '(%)' 
+      THEN -TRY_CAST(REPLACE(REGEXP_REPLACE(TRIM(CAST(${col} AS VARCHAR)), '^[₱$€£\\s(]+|[)]+$', '', 'g'), ',', '') AS DOUBLE)
+      ELSE TRY_CAST(REPLACE(REGEXP_REPLACE(TRIM(CAST(${col} AS VARCHAR)), '^[₱$€£\\s]+', ''), ',', '') AS DOUBLE)
+    END)`;
+
     return values
       .map((val) => {
         const col = `"${val.column.replace(/"/g, '""')}"`;
         const alias = `"${(val.alias || `${val.aggregation}_${val.column}`).replace(/"/g, '""')}"`;
 
-        let aggFunc = `SUM(TRY_CAST(${col} AS DOUBLE))`;
+        let aggFunc = `SUM(${safeCast(col)})`;
         switch (val.aggregation.toUpperCase()) {
           case 'SUM':
-            aggFunc = `SUM(TRY_CAST(${col} AS DOUBLE))`;
+            aggFunc = `SUM(${safeCast(col)})`;
             break;
           case 'COUNT':
             aggFunc = `COUNT(${col})`;
@@ -764,13 +855,13 @@ export class DuckDbPivotEngine {
             break;
           case 'AVERAGE':
           case 'AVG':
-            aggFunc = `AVG(TRY_CAST(${col} AS DOUBLE))`;
+            aggFunc = `AVG(${safeCast(col)})`;
             break;
           case 'MIN':
-            aggFunc = `MIN(TRY_CAST(${col} AS DOUBLE))`;
+            aggFunc = `MIN(${safeCast(col)})`;
             break;
           case 'MAX':
-            aggFunc = `MAX(TRY_CAST(${col} AS DOUBLE))`;
+            aggFunc = `MAX(${safeCast(col)})`;
             break;
         }
 

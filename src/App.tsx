@@ -9,7 +9,7 @@ import { StatusBar } from './components/StatusBar.js';
 import { ToastContainer, ToastItem } from './components/Toast.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { UpdateModal, UpdateInfo, UpdateProgress } from './components/UpdateModal.js';
-import { PivotTemplate, PivotHierarchyNode, FilterDefinition, ValueMetricDefinition, ColumnStyle, HeaderGroupDefinition, PivotCraftProject } from './types/pivot.js';
+import { PivotTemplate, PivotHierarchyNode, FilterDefinition, ValueMetricDefinition, ColumnStyle, HeaderGroupDefinition, PivotCraftProject, CalculatedFieldDefinition, resolveTotalMode } from './types/pivot.js';
 import { globalFormulaParser, preprocessFormula } from './utils/formulaEngine.js';
 
 export const App: React.FC = () => {
@@ -56,6 +56,7 @@ export const App: React.FC = () => {
         headerGroups: [],
         columnOrder: [],
         wrapHeaders: false,
+        freezeFirstColumn: true,
       };
     }
     return {
@@ -72,6 +73,7 @@ export const App: React.FC = () => {
       headerGroups: Array.isArray(raw.headerGroups) ? raw.headerGroups : [],
       columnOrder: Array.isArray(raw.columnOrder) ? raw.columnOrder : [],
       wrapHeaders: !!raw.wrapHeaders,
+      freezeFirstColumn: raw.freezeFirstColumn !== undefined ? !!raw.freezeFirstColumn : true,
     };
   };
 
@@ -86,6 +88,10 @@ export const App: React.FC = () => {
   const [isBusy, setIsBusy] = useState<boolean>(false);
   const [isFieldListOpen, setIsFieldListOpen] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string>('Ready. Load a CSV dataset to view records and generate pivot tables.');
+
+  // Active Project & Template File Tracking
+  const [currentPvcFile, setCurrentPvcFile] = useState<{ fileName: string; filePath: string } | null>(null);
+  const [currentTemplateFile, setCurrentTemplateFile] = useState<{ fileName: string; filePath: string } | null>(null);
 
   // Auto-Updater State
   const [currentVersion, setCurrentVersion] = useState<string>('1.0.1');
@@ -272,33 +278,40 @@ export const App: React.FC = () => {
         }
       }
 
-      // Re-apply preserved cell input overrides & calculate formatting
+      // Sanitize cellOverridesRef: remove Grand Total and non-leaf paths
+      delete cellOverridesRef.current['Grand Total'];
+
+      // Re-apply preserved cell input overrides & calculate formatting for leaf nodes
       for (const node of res.nodes) {
         if (prevExpandedMap.has(node.fullPath)) {
           node.isExpanded = prevExpandedMap.get(node.fullPath)!;
         }
-        const saved = cellOverridesRef.current[node.fullPath];
-        if (saved) {
-          node.editableOverrides = { ...node.editableOverrides, ...saved };
-          for (const [colKey, savedVal] of Object.entries(saved)) {
-            const valDef = cleanTpl.values.find((v) => (v.alias || `${v.aggregation}_${v.column}`) === colKey);
-            const calcDef = cleanTpl.calculatedFields.find((c) => (c.alias || c.name) === colKey);
-            const format = valDef?.format || calcDef?.format;
-            const decimals = valDef?.decimalPlaces ?? calcDef?.decimalPlaces;
-            const isPct = valDef?.isAlreadyPercent ?? calcDef?.isAlreadyPercent;
+        if (node.isLeaf) {
+          const saved = cellOverridesRef.current[node.fullPath];
+          if (saved) {
+            node.editableOverrides = { ...node.editableOverrides, ...saved };
+            for (const [colKey, savedVal] of Object.entries(saved)) {
+              const valDef = cleanTpl.values.find((v) => (v.alias || `${v.aggregation}_${v.column}`) === colKey);
+              const calcDef = cleanTpl.calculatedFields.find((c) => (c.alias || c.name) === colKey);
+              const format = valDef?.format || calcDef?.format;
+              const decimals = valDef?.decimalPlaces ?? calcDef?.decimalPlaces;
+              const isPct = valDef?.isAlreadyPercent ?? calcDef?.isAlreadyPercent;
 
-            if (calcDef) {
-              node.calculatedValues[colKey] = savedVal;
+              if (calcDef) {
+                node.calculatedValues[colKey] = savedVal;
+              }
+              node.formattedValues[colKey] = formatValue(savedVal, format, decimals, isPct);
             }
-            node.formattedValues[colKey] = formatValue(savedVal, format, decimals, isPct);
           }
+          // Recalculate formula calculated fields for leaf node
+          recalculateFormulasForNode(node, cleanTpl);
+        } else {
+          node.editableOverrides = {};
         }
       }
 
-      // Recalculate formula calculated fields across all nodes with the preserved input values
-      for (const node of res.nodes) {
-        recalculateFormulasForNode(node, cleanTpl);
-      }
+      // Recalculate subtotals and Grand Total bottom-up across all nodes
+      recalculateAllSubtotalsAndGrandTotal(res.nodes, cleanTpl);
 
       setAllNodes(res.nodes);
       setVisibleNodes(computeVisibleNodes(res.nodes));
@@ -321,6 +334,11 @@ export const App: React.FC = () => {
       if (!res) {
         setIsBusy(false);
         return;
+      }
+      setCurrentPvcFile(null);
+      if (res.filePath) {
+        const csvName = res.filePath.replace(/^.*[\\/]/, '');
+        document.title = `PivotCraft - ${csvName}`;
       }
       cellOverridesRef.current = {};
       setRowCount(res.rowCount);
@@ -355,8 +373,14 @@ export const App: React.FC = () => {
       if (!res || !res.template) return;
       const cleanTpl = sanitizeTemplate(res.template);
       setTemplate(cleanTpl);
-      setStatusMessage(`Loaded template: ${cleanTpl.templateName}`);
-      showToast('success', 'Template Loaded', `Applied "${cleanTpl.templateName}" schema successfully.`);
+      const fullPath = res.filePath;
+      const fileName = fullPath ? fullPath.replace(/^.*[\\/]/, '') : `${cleanTpl.templateName}.json`;
+      setCurrentTemplateFile({ fileName, filePath: fullPath });
+      if (!currentPvcFile) {
+        document.title = `PivotCraft - [Template: ${fileName}]`;
+      }
+      setStatusMessage(`Loaded template: ${fileName}`);
+      showToast('success', 'Template Loaded', `Applied "${fileName}" schema successfully.`);
       setViewMode('pivot');
       if (rowCount > 0 && cleanTpl.rowHierarchy.length > 0) {
         await executePivot(cleanTpl);
@@ -369,10 +393,16 @@ export const App: React.FC = () => {
   const handleSaveTemplate = async () => {
     if (!window.electronAPI || !template) return;
     try {
-      const res = await window.electronAPI.saveTemplate(template);
-      if (res) {
-        setStatusMessage(`Template saved successfully.`);
-        showToast('success', 'Template Saved', `Configuration saved to "${template.templateName}".`);
+      const res = await window.electronAPI.saveTemplate({
+        template,
+        defaultPath: currentTemplateFile?.filePath,
+      });
+      if (res && res.filePath) {
+        const fullPath = res.filePath;
+        const fileName = fullPath.replace(/^.*[\\/]/, '');
+        setCurrentTemplateFile({ fileName, filePath: fullPath });
+        setStatusMessage(`Template saved: ${fileName}`);
+        showToast('success', 'Template Saved', `Configuration saved to "${fileName}".`);
       }
     } catch (err: any) {
       showToast('error', 'Template Save Failed', err.message);
@@ -440,78 +470,275 @@ export const App: React.FC = () => {
     return formatted;
   };
 
-  const recalculateFormulasForNode = (node: PivotHierarchyNode, tpl: PivotTemplate) => {
-    for (const calc of tpl.calculatedFields) {
-      const key = calc.alias || calc.name;
-      if (!calc.formula || !calc.formula.trim()) {
-        // Pure manual input column without formula
-        const currentVal = node.editableOverrides[key] ?? (typeof node.calculatedValues[key] === 'number' ? node.calculatedValues[key] : 0);
-        node.calculatedValues[key] = currentVal;
-        node.formattedValues[key] = formatValue(currentVal, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
-        continue;
-      }
-      try {
-        let formula = preprocessFormula(calc.formula);
+  const recalculateSingleFormulaForNode = (node: PivotHierarchyNode, calc: CalculatedFieldDefinition) => {
+    const key = calc.alias || calc.name;
+    if (!calc.formula || !calc.formula.trim()) {
+      // Pure manual input column without formula
+      const currentVal = node.editableOverrides[key] ?? (typeof node.calculatedValues[key] === 'number' ? node.calculatedValues[key] : 0);
+      node.calculatedValues[key] = currentVal;
+      node.formattedValues[key] = formatValue(currentVal, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+      return;
+    }
+    try {
+      let formula = preprocessFormula(calc.formula);
 
-        const scope: Record<string, any> = {};
-        let varIdx = 0;
-        formula = formula.replace(/\[(.*?)\]/g, (_, colName) => {
-          const varName = `var_${varIdx++}`;
-          let val: any = 0;
-          const normalized = colName.trim().toLowerCase();
+      const scope: Record<string, any> = {};
+      let varIdx = 0;
+      formula = formula.replace(/\[(.*?)\]/g, (_, colName) => {
+        const varName = `var_${varIdx++}`;
+        let val: any = 0;
+        const normalized = colName.trim().toLowerCase();
 
-          // 1. Check for Row Label keyword: [Row], [RowLabel], [Label], [GroupValue]
-          if (['row', 'rowlabel', 'row_label', 'label', 'group', 'groupvalue', 'group_value', 'displaytext', 'display_text'].includes(normalized)) {
-            val = node.displayText || node.groupValue || '';
-            scope[varName] = val;
-            return varName;
-          }
-
-          // 2. Check if colName references the node's grouping field (e.g. [Month] or [Date])
-          if (node.groupField && node.groupField.trim().toLowerCase() === normalized) {
-            val = node.displayText || node.groupValue || '';
-            scope[varName] = val;
-            return varName;
-          }
-
-          if (node.editableOverrides[colName] !== undefined) {
-            val = node.editableOverrides[colName];
-          } else if (node.numericMetrics[colName] !== undefined) {
-            val = node.numericMetrics[colName];
-          } else if (node.calculatedValues[colName] !== undefined) {
-            val = typeof node.calculatedValues[colName] === 'number' ? node.calculatedValues[colName] : Number(node.calculatedValues[colName]) || 0;
-          } else {
-            // Case-insensitive & trimmed fallback for unrounded metric resolution
-            const foundOverrideKey = Object.keys(node.editableOverrides).find((k) => k.trim().toLowerCase() === normalized);
-            const foundMetricKey = Object.keys(node.numericMetrics).find((k) => k.trim().toLowerCase() === normalized);
-            const foundCalcKey = Object.keys(node.calculatedValues).find((k) => k.trim().toLowerCase() === normalized);
-
-            if (foundOverrideKey !== undefined) {
-              val = node.editableOverrides[foundOverrideKey];
-            } else if (foundMetricKey !== undefined) {
-              val = node.numericMetrics[foundMetricKey];
-            } else if (foundCalcKey !== undefined) {
-              val = typeof node.calculatedValues[foundCalcKey] === 'number' ? node.calculatedValues[foundCalcKey] : Number(node.calculatedValues[foundCalcKey]) || 0;
-            }
-          }
+        // 1. Check for Row Label keyword: [Row], [RowLabel], [Label], [GroupValue]
+        if (['row', 'rowlabel', 'row_label', 'label', 'group', 'groupvalue', 'group_value', 'displaytext', 'display_text'].includes(normalized)) {
+          val = node.displayText || node.groupValue || '';
           scope[varName] = val;
           return varName;
-        });
-
-        const expr = globalFormulaParser.parse(formula);
-        const result = expr.evaluate(scope);
-        // Store the exact unrounded computation in calculatedValues
-        node.calculatedValues[key] = result;
-
-        // Display formatting only rounds the presentation string
-        if (typeof result === 'number') {
-          node.formattedValues[key] = formatValue(result, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
-        } else {
-          node.formattedValues[key] = String(result ?? '');
         }
-      } catch (err: any) {
-        node.calculatedValues[key] = `ERR: ${err.message}`;
-        node.formattedValues[key] = 'ERR';
+
+        // 2. Check if colName references the node's grouping field (e.g. [Month] or [Date])
+        if (node.groupField && node.groupField.trim().toLowerCase() === normalized) {
+          val = node.displayText || node.groupValue || '';
+          scope[varName] = val;
+          return varName;
+        }
+
+        if (node.editableOverrides[colName] !== undefined) {
+          val = node.editableOverrides[colName];
+        } else if (node.numericMetrics[colName] !== undefined) {
+          val = node.numericMetrics[colName];
+        } else if (node.calculatedValues[colName] !== undefined) {
+          val = typeof node.calculatedValues[colName] === 'number' ? node.calculatedValues[colName] : Number(node.calculatedValues[colName]) || 0;
+        } else {
+          // Case-insensitive & trimmed fallback for unrounded metric resolution
+          const foundOverrideKey = Object.keys(node.editableOverrides).find((k) => k.trim().toLowerCase() === normalized);
+          const foundMetricKey = Object.keys(node.numericMetrics).find((k) => k.trim().toLowerCase() === normalized);
+          const foundCalcKey = Object.keys(node.calculatedValues).find((k) => k.trim().toLowerCase() === normalized);
+
+          if (foundOverrideKey !== undefined) {
+            val = node.editableOverrides[foundOverrideKey];
+          } else if (foundMetricKey !== undefined) {
+            val = node.numericMetrics[foundMetricKey];
+          } else if (foundCalcKey !== undefined) {
+            val = typeof node.calculatedValues[foundCalcKey] === 'number' ? node.calculatedValues[foundCalcKey] : Number(node.calculatedValues[foundCalcKey]) || 0;
+          }
+        }
+        scope[varName] = val;
+        return varName;
+      });
+
+      const expr = globalFormulaParser.parse(formula);
+      const result = expr.evaluate(scope);
+      // Store the exact unrounded computation in calculatedValues
+      node.calculatedValues[key] = result;
+
+      // Display formatting only rounds the presentation string
+      if (typeof result === 'number') {
+        node.formattedValues[key] = formatValue(result, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+      } else {
+        node.formattedValues[key] = String(result ?? '');
+      }
+    } catch (err: any) {
+      node.calculatedValues[key] = `ERR: ${err.message}`;
+      node.formattedValues[key] = 'ERR';
+    }
+  };
+
+  const recalculateFormulasForNode = (node: PivotHierarchyNode, tpl: PivotTemplate) => {
+    for (const calc of tpl.calculatedFields) {
+      recalculateSingleFormulaForNode(node, calc);
+    }
+  };
+
+  const recalculateAllSubtotalsAndGrandTotal = (nodes: PivotHierarchyNode[], tpl: PivotTemplate) => {
+    if (!nodes || nodes.length === 0) return;
+
+    const nodeMap = new Map<string, PivotHierarchyNode>();
+    for (const n of nodes) {
+      nodeMap.set(n.id, n);
+    }
+
+    // Ensure children references are synced to nodeMap
+    for (const n of nodes) {
+      if (n.children && n.children.length > 0) {
+        n.children = n.children.map((c) => nodeMap.get(c.id) || c);
+      }
+    }
+
+    const grandTotalNode = nodes.find((n) => n.isGrandTotal);
+    const nonGrandTotalNodes = nodes.filter((n) => !n.isGrandTotal);
+    const maxLevel = nonGrandTotalNodes.reduce((max, n) => Math.max(max, n.level), 0);
+
+    const getEffectiveMetric = (n: PivotHierarchyNode, colKey: string): number => {
+      if (n.editableOverrides[colKey] !== undefined) return n.editableOverrides[colKey];
+      return n.numericMetrics[colKey] ?? 0;
+    };
+
+    const getEffectiveCalc = (n: PivotHierarchyNode, calcKey: string): number => {
+      if (n.editableOverrides[calcKey] !== undefined) return n.editableOverrides[calcKey];
+      const val = n.calculatedValues[calcKey];
+      if (typeof val === 'number') return isFinite(val) && !isNaN(val) ? val : 0;
+      if (val !== null && val !== undefined && val !== '' && val !== '-') {
+        const parsed = Number(val);
+        if (!isNaN(parsed) && isFinite(parsed)) return parsed;
+      }
+      return 0;
+    };
+
+    // Bottom-up pass for subtotals: from maxLevel - 1 down to level 1
+    for (let l = maxLevel - 1; l >= 1; l--) {
+      const parentsAtLevel = nonGrandTotalNodes.filter((n) => n.level === l && n.isSubtotal);
+      for (const parent of parentsAtLevel) {
+        if (!parent.children || parent.children.length === 0) continue;
+
+        // 1. Recalculate value metrics for parent
+        for (const val of tpl.values) {
+          const colKey = val.alias || `${val.aggregation}_${val.column}`;
+          const agg = (val.aggregation || 'SUM').toUpperCase();
+
+          if (agg === 'SUM') {
+            const sum = parent.children.reduce((acc, c) => acc + getEffectiveMetric(c, colKey), 0);
+            parent.numericMetrics[colKey] = sum;
+            delete parent.editableOverrides[colKey];
+            parent.formattedValues[colKey] = formatValue(sum, val.format, val.decimalPlaces, val.isAlreadyPercent);
+          } else if (agg === 'COUNT') {
+            const hasOverride = parent.children.some((c) => c.editableOverrides[colKey] !== undefined);
+            if (hasOverride) {
+              const count = parent.children.reduce((acc, c) => acc + getEffectiveMetric(c, colKey), 0);
+              parent.numericMetrics[colKey] = count;
+              delete parent.editableOverrides[colKey];
+              parent.formattedValues[colKey] = formatValue(count, val.format, val.decimalPlaces, val.isAlreadyPercent);
+            }
+          } else if (agg === 'MIN') {
+            const min = Math.min(...parent.children.map((c) => getEffectiveMetric(c, colKey)));
+            parent.numericMetrics[colKey] = min;
+            delete parent.editableOverrides[colKey];
+            parent.formattedValues[colKey] = formatValue(min, val.format, val.decimalPlaces, val.isAlreadyPercent);
+          } else if (agg === 'MAX') {
+            const max = Math.max(...parent.children.map((c) => getEffectiveMetric(c, colKey)));
+            parent.numericMetrics[colKey] = max;
+            delete parent.editableOverrides[colKey];
+            parent.formattedValues[colKey] = formatValue(max, val.format, val.decimalPlaces, val.isAlreadyPercent);
+          } else if (agg === 'AVG' || agg === 'AVERAGE') {
+            const hasOverride = parent.children.some((c) => c.editableOverrides[colKey] !== undefined);
+            if (hasOverride) {
+              const avg = parent.children.reduce((acc, c) => acc + getEffectiveMetric(c, colKey), 0) / (parent.children.length || 1);
+              parent.numericMetrics[colKey] = avg;
+              delete parent.editableOverrides[colKey];
+              parent.formattedValues[colKey] = formatValue(avg, val.format, val.decimalPlaces, val.isAlreadyPercent);
+            }
+          }
+        }
+
+        // 2. Recalculate calculated fields for parent according to totalMode
+        for (const calc of tpl.calculatedFields) {
+          const calcKey = calc.alias || calc.name;
+          const mode = resolveTotalMode(calc);
+
+          if (mode === 'sum') {
+            const sum = parent.children.reduce((acc, c) => acc + getEffectiveCalc(c, calcKey), 0);
+            parent.calculatedValues[calcKey] = sum;
+            delete parent.editableOverrides[calcKey];
+            parent.formattedValues[calcKey] = formatValue(sum, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+          } else if (mode === 'avg') {
+            const avg = parent.children.reduce((acc, c) => acc + getEffectiveCalc(c, calcKey), 0) / (parent.children.length || 1);
+            parent.calculatedValues[calcKey] = avg;
+            delete parent.editableOverrides[calcKey];
+            parent.formattedValues[calcKey] = formatValue(avg, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+          } else if (mode === 'min') {
+            const min = Math.min(...parent.children.map((c) => getEffectiveCalc(c, calcKey)));
+            parent.calculatedValues[calcKey] = min;
+            delete parent.editableOverrides[calcKey];
+            parent.formattedValues[calcKey] = formatValue(min, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+          } else if (mode === 'max') {
+            const max = Math.max(...parent.children.map((c) => getEffectiveCalc(c, calcKey)));
+            parent.calculatedValues[calcKey] = max;
+            delete parent.editableOverrides[calcKey];
+            parent.formattedValues[calcKey] = formatValue(max, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+          } else if (mode === 'formula') {
+            recalculateSingleFormulaForNode(parent, calc);
+          }
+        }
+      }
+    }
+
+    // Grand Total aggregation pass: aggregate across root nodes (level 1)
+    if (grandTotalNode) {
+      const rootNodes = nonGrandTotalNodes.filter((n) => n.level === 1);
+
+      // 1. Recalculate value metrics for Grand Total
+      for (const val of tpl.values) {
+        const colKey = val.alias || `${val.aggregation}_${val.column}`;
+        const agg = (val.aggregation || 'SUM').toUpperCase();
+
+        if (agg === 'SUM') {
+          const sum = rootNodes.reduce((acc, r) => acc + getEffectiveMetric(r, colKey), 0);
+          grandTotalNode.numericMetrics[colKey] = sum;
+          delete grandTotalNode.editableOverrides[colKey];
+          grandTotalNode.formattedValues[colKey] = formatValue(sum, val.format, val.decimalPlaces, val.isAlreadyPercent);
+        } else if (agg === 'COUNT') {
+          const hasOverride = rootNodes.some((r) => r.editableOverrides[colKey] !== undefined);
+          if (hasOverride) {
+            const count = rootNodes.reduce((acc, r) => acc + getEffectiveMetric(r, colKey), 0);
+            grandTotalNode.numericMetrics[colKey] = count;
+            delete grandTotalNode.editableOverrides[colKey];
+            grandTotalNode.formattedValues[colKey] = formatValue(count, val.format, val.decimalPlaces, val.isAlreadyPercent);
+          }
+        } else if (agg === 'MIN') {
+          if (rootNodes.length > 0) {
+            const min = Math.min(...rootNodes.map((r) => getEffectiveMetric(r, colKey)));
+            grandTotalNode.numericMetrics[colKey] = min;
+            delete grandTotalNode.editableOverrides[colKey];
+            grandTotalNode.formattedValues[colKey] = formatValue(min, val.format, val.decimalPlaces, val.isAlreadyPercent);
+          }
+        } else if (agg === 'MAX') {
+          if (rootNodes.length > 0) {
+            const max = Math.max(...rootNodes.map((r) => getEffectiveMetric(r, colKey)));
+            grandTotalNode.numericMetrics[colKey] = max;
+            delete grandTotalNode.editableOverrides[colKey];
+            grandTotalNode.formattedValues[colKey] = formatValue(max, val.format, val.decimalPlaces, val.isAlreadyPercent);
+          }
+        } else if (agg === 'AVG' || agg === 'AVERAGE') {
+          const hasOverride = rootNodes.some((r) => r.editableOverrides[colKey] !== undefined);
+          if (hasOverride) {
+            const avg = rootNodes.reduce((acc, r) => acc + getEffectiveMetric(r, colKey), 0) / (rootNodes.length || 1);
+            grandTotalNode.numericMetrics[colKey] = avg;
+            delete grandTotalNode.editableOverrides[colKey];
+            grandTotalNode.formattedValues[colKey] = formatValue(avg, val.format, val.decimalPlaces, val.isAlreadyPercent);
+          }
+        }
+      }
+
+      // 2. Recalculate calculated fields for Grand Total according to totalMode
+      for (const calc of tpl.calculatedFields) {
+        const calcKey = calc.alias || calc.name;
+        const mode = resolveTotalMode(calc);
+
+        if (mode === 'sum') {
+          const sum = rootNodes.reduce((acc, r) => acc + getEffectiveCalc(r, calcKey), 0);
+          grandTotalNode.calculatedValues[calcKey] = sum;
+          delete grandTotalNode.editableOverrides[calcKey];
+          grandTotalNode.formattedValues[calcKey] = formatValue(sum, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+        } else if (mode === 'avg') {
+          const avg = rootNodes.reduce((acc, r) => acc + getEffectiveCalc(r, calcKey), 0) / (rootNodes.length || 1);
+          grandTotalNode.calculatedValues[calcKey] = avg;
+          delete grandTotalNode.editableOverrides[calcKey];
+          grandTotalNode.formattedValues[calcKey] = formatValue(avg, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+        } else if (mode === 'min') {
+          if (rootNodes.length > 0) {
+            const min = Math.min(...rootNodes.map((r) => getEffectiveCalc(r, calcKey)));
+            grandTotalNode.calculatedValues[calcKey] = min;
+            grandTotalNode.formattedValues[calcKey] = formatValue(min, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+          }
+        } else if (mode === 'max') {
+          if (rootNodes.length > 0) {
+            const max = Math.max(...rootNodes.map((r) => getEffectiveCalc(r, calcKey)));
+            grandTotalNode.calculatedValues[calcKey] = max;
+            grandTotalNode.formattedValues[calcKey] = formatValue(max, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+          }
+        } else if (mode === 'formula') {
+          recalculateSingleFormulaForNode(grandTotalNode, calc);
+        }
       }
     }
   };
@@ -537,11 +764,25 @@ export const App: React.FC = () => {
   const handleCellEdit = (nodeId: string, columnKey: string, newValue: number) => {
     if (!template) return;
 
+    const updatedNodes = allNodes.map((n) => ({
+      ...n,
+      numericMetrics: { ...n.numericMetrics },
+      calculatedValues: { ...n.calculatedValues },
+      editableOverrides: { ...n.editableOverrides },
+      formattedValues: { ...n.formattedValues },
+    }));
+
     const nodeMap = new Map<string, PivotHierarchyNode>();
-    for (const n of allNodes) nodeMap.set(n.id, { ...n });
+    for (const n of updatedNodes) nodeMap.set(n.id, n);
+
+    for (const n of updatedNodes) {
+      if (n.children && n.children.length > 0) {
+        n.children = n.children.map((c) => nodeMap.get(c.id) || c);
+      }
+    }
 
     const targetNode = nodeMap.get(nodeId);
-    if (!targetNode) return;
+    if (!targetNode || !targetNode.isLeaf) return;
 
     const valDef = template.values.find((v) => (v.alias || `${v.aggregation}_${v.column}`) === columnKey);
     const calcDef = template.calculatedFields.find((c) => (c.alias || c.name) === columnKey);
@@ -551,72 +792,23 @@ export const App: React.FC = () => {
     const decimals = valDef?.decimalPlaces ?? calcDef?.decimalPlaces;
     const isPct = valDef?.isAlreadyPercent ?? calcDef?.isAlreadyPercent;
 
-    // 1. Update Target Node
-    targetNode.editableOverrides = { ...targetNode.editableOverrides, [columnKey]: effectiveValue };
+    // 1. Update Target Leaf Node
+    targetNode.editableOverrides[columnKey] = effectiveValue;
     if (calcDef) {
       targetNode.calculatedValues[columnKey] = effectiveValue;
     }
     targetNode.formattedValues[columnKey] = formatValue(effectiveValue, format, decimals, isPct);
     recalculateFormulasForNode(targetNode, template);
 
-    // Persist to cellOverridesRef by fullPath
+    // Persist to cellOverridesRef by fullPath ONLY for leaf nodes
     cellOverridesRef.current[targetNode.fullPath] = {
       ...(cellOverridesRef.current[targetNode.fullPath] || {}),
       [columnKey]: effectiveValue,
     };
 
-    // 2. Bubble up to Parent Subtotals and Grand Total
-    const bubbleUp = (currNode: PivotHierarchyNode) => {
-      if (!currNode.parentId) {
-        const grandTotal = Array.from(nodeMap.values()).find((n) => n.isGrandTotal);
-        if (grandTotal) {
-          let sum = 0;
-          for (const n of nodeMap.values()) {
-            if (n.level === 1) {
-              sum += n.editableOverrides[columnKey] ?? (calcDef ? Number(n.calculatedValues[columnKey]) || 0 : n.numericMetrics[columnKey] || 0);
-            }
-          }
-          grandTotal.editableOverrides[columnKey] = sum;
-          if (calcDef) {
-            grandTotal.calculatedValues[columnKey] = sum;
-          }
-          grandTotal.formattedValues[columnKey] = formatValue(sum, format, decimals, isPct);
-          recalculateFormulasForNode(grandTotal, template);
+    // 2. Recalculate all subtotals and grand total bottom-up
+    recalculateAllSubtotalsAndGrandTotal(updatedNodes, template);
 
-          cellOverridesRef.current[grandTotal.fullPath] = {
-            ...(cellOverridesRef.current[grandTotal.fullPath] || {}),
-            [columnKey]: sum,
-          };
-        }
-        return;
-      }
-
-      const parent = nodeMap.get(currNode.parentId);
-      if (parent) {
-        let sum = 0;
-        for (const child of parent.children) {
-          const liveChild = nodeMap.get(child.id) || child;
-          sum += liveChild.editableOverrides[columnKey] ?? (calcDef ? Number(liveChild.calculatedValues[columnKey]) || 0 : liveChild.numericMetrics[columnKey] || 0);
-        }
-        parent.editableOverrides[columnKey] = sum;
-        if (calcDef) {
-          parent.calculatedValues[columnKey] = sum;
-        }
-        parent.formattedValues[columnKey] = formatValue(sum, format, decimals, isPct);
-        recalculateFormulasForNode(parent, template);
-
-        cellOverridesRef.current[parent.fullPath] = {
-          ...(cellOverridesRef.current[parent.fullPath] || {}),
-          [columnKey]: sum,
-        };
-
-        bubbleUp(parent);
-      }
-    };
-
-    bubbleUp(targetNode);
-
-    const updatedNodes = allNodes.map((n) => nodeMap.get(n.id) || n);
     setAllNodes(updatedNodes);
     setVisibleNodes(computeVisibleNodes(updatedNodes));
     setStatusMessage(`Cell updated. Re-evaluated formulas and subtotals in 1ms.`);
@@ -830,10 +1022,11 @@ export const App: React.FC = () => {
       setIsBusy(true);
       setStatusMessage('Saving PivotCraft project package (.pvc)...');
 
-      // 1. Gather all manual cell overrides from both cellOverridesRef and all active nodes in memory
+      // 1. Gather all manual cell overrides from both cellOverridesRef and all active nodes in memory (leaf nodes only)
       const collectedOverrides: Record<string, Record<string, number>> = { ...(cellOverridesRef.current || {}) };
+      delete collectedOverrides['Grand Total'];
       for (const n of allNodes) {
-        if (n && n.fullPath && n.editableOverrides && Object.keys(n.editableOverrides).length > 0) {
+        if (n && n.isLeaf && n.fullPath && n.editableOverrides && Object.keys(n.editableOverrides).length > 0) {
           collectedOverrides[n.fullPath] = {
             ...(collectedOverrides[n.fullPath] || {}),
             ...n.editableOverrides,
@@ -851,11 +1044,16 @@ export const App: React.FC = () => {
         rowCount,
         columns: availableColumns.map((c) => ({ columnName: c, dataType: 'VARCHAR' })),
         datasetName: template.templateName || 'PivotCraft_Project',
+        defaultPath: currentPvcFile?.filePath,
       };
       const res = await window.electronAPI.saveProject(payload);
       if (res && res.filePath) {
-        setStatusMessage(`Project saved to ${res.filePath}`);
-        showToast('success', 'Workbook Saved', `Saved complete raw dataset, input fields, formulas & template to ${res.filePath}`);
+        const fullPath = res.filePath;
+        const fileName = fullPath.replace(/^.*[\\/]/, '');
+        setCurrentPvcFile({ fileName, filePath: fullPath });
+        document.title = `PivotCraft - ${fileName}`;
+        setStatusMessage(`Project saved to ${fileName}`);
+        showToast('success', 'Workbook Saved', `Saved complete raw dataset, input fields, formulas & template to ${fileName}`);
       } else {
         setStatusMessage('Project save cancelled.');
       }
@@ -880,12 +1078,19 @@ export const App: React.FC = () => {
         setIsBusy(false);
         return;
       }
+      const fullPath = res.filePath;
+      const fileName = fullPath ? fullPath.replace(/^.*[\\/]/, '') : 'Workbook.pvc';
+      setCurrentPvcFile({ fileName, filePath: fullPath });
+      setCurrentTemplateFile(null);
+      document.title = `PivotCraft - ${fileName}`;
+
       const proj: PivotCraftProject = res.project;
       const sanitized = sanitizeTemplate(proj.template);
       setTemplate(sanitized);
 
-      // 1. Restore cell overrides
+      // 1. Restore cell overrides (sanitized to remove Grand Total)
       cellOverridesRef.current = proj.cellOverrides || {};
+      delete cellOverridesRef.current['Grand Total'];
 
       // 2. Restore column schema & row count
       const loadedCols = Array.isArray(proj.columns) && proj.columns.length > 0
@@ -904,8 +1109,8 @@ export const App: React.FC = () => {
         setViewMode('raw');
       }
 
-      setStatusMessage(`Loaded project from ${res.filePath} (${loadedRowCount.toLocaleString()} rows)`);
-      showToast('success', 'Workbook Restored', `Restored dataset (${loadedRowCount.toLocaleString()} rows), input fields, and pivot state.`);
+      setStatusMessage(`Loaded workbook from ${fileName} (${loadedRowCount.toLocaleString()} rows)`);
+      showToast('success', 'Workbook Restored', `Restored "${fileName}" (${loadedRowCount.toLocaleString()} rows), input fields, and pivot state.`);
     } catch (err: any) {
       console.error('Load project error:', err);
       showToast('error', 'Failed to Open Project', err.message || String(err));
@@ -924,6 +1129,15 @@ export const App: React.FC = () => {
     setStatusMessage(`Header text wrapping ${nextVal ? 'enabled' : 'disabled'}.`);
   };
 
+  // Toggle Freeze Pane First Column (Global)
+  const handleToggleFreezeFirstColumn = () => {
+    if (!template) return;
+    const nextVal = !(template.freezeFirstColumn !== false);
+    const updated = { ...template, freezeFirstColumn: nextVal };
+    setTemplate(updated);
+    setStatusMessage(`First column freeze pane ${nextVal ? 'enabled' : 'disabled'}.`);
+  };
+
   // Clear All Data and reset workspace to load a new CSV
   const handleClearAll = () => {
     if (rowCount > 0 || allNodes.length > 0) {
@@ -937,6 +1151,9 @@ export const App: React.FC = () => {
     setAllNodes([]);
     setVisibleNodes([]);
     setLatencyMs(0);
+    setCurrentPvcFile(null);
+    setCurrentTemplateFile(null);
+    document.title = 'PivotCraft ⚡ - Vectorized CSV & Pivot Engine';
     setTemplate(sanitizeTemplate(null));
     setViewMode('pivot');
     setIsFieldListOpen(false);
@@ -974,6 +1191,10 @@ export const App: React.FC = () => {
     >
       <Header
         templateName={template?.templateName || 'No Active Template'}
+        templateFileName={currentTemplateFile?.fileName}
+        templateFilePath={currentTemplateFile?.filePath}
+        pvcFileName={currentPvcFile?.fileName}
+        pvcFilePath={currentPvcFile?.filePath}
         rowCount={rowCount}
         latencyMs={latencyMs}
         theme={theme}
@@ -995,6 +1216,8 @@ export const App: React.FC = () => {
         onClearAll={handleClearAll}
         isWrapHeaders={!!template?.wrapHeaders}
         onToggleWrapHeaders={handleToggleWrapHeaders}
+        isFreezeFirstColumn={template?.freezeFirstColumn !== false}
+        onToggleFreezeFirstColumn={handleToggleFreezeFirstColumn}
         onToggleFieldList={() => setIsFieldListOpen(!isFieldListOpen)}
         onExpandAll={handleExpandAll}
         onCollapseAll={handleCollapseAll}
@@ -1033,6 +1256,7 @@ export const App: React.FC = () => {
                 columns={availableColumns}
                 totalRows={rowCount}
                 isWrapHeaders={!!template?.wrapHeaders}
+                isFreezeFirstColumn={template?.freezeFirstColumn !== false}
                 onOpenPivotStudio={() => {
                   setViewMode('pivot');
                   setIsFieldListOpen(true);
@@ -1053,6 +1277,7 @@ export const App: React.FC = () => {
                 onToggleColumnEditability={handleToggleColumnEditability}
                 onSortByColumn={handleSortByColumn}
                 onReorderColumns={handleReorderColumns}
+                onToggleFreezeFirstColumn={handleToggleFreezeFirstColumn}
                 onLoadCsv={handleLoadCsv}
                 onLoadTemplate={handleLoadTemplate}
                 onOpenPivotStudio={() => setIsFieldListOpen(true)}
@@ -1082,6 +1307,8 @@ export const App: React.FC = () => {
         latencyMs={latencyMs}
         rowCount={rowCount}
         theme={theme}
+        pvcFileName={currentPvcFile?.fileName}
+        templateFileName={currentTemplateFile?.fileName}
       />
 
       {/* Auto-Updater Dialog Modal */}

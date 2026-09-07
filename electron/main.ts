@@ -176,11 +176,13 @@ ipcMain.handle('pivot:loadTemplate', async () => {
   return { filePath, template };
 });
 
-ipcMain.handle('pivot:saveTemplate', async (_, template: PivotTemplate) => {
+ipcMain.handle('pivot:saveTemplate', async (_, templateOrPayload: any) => {
+  const template: PivotTemplate = templateOrPayload?.template || templateOrPayload;
+  const defaultPath = templateOrPayload?.defaultPath || `${(template.templateName || 'Pivot_Template').replace(/\s+/g, '_')}.json`;
   const res = await dialog.showSaveDialog(win!, {
     title: 'Save Pivot JSON Template',
     filters: [{ name: 'JSON Template', extensions: ['json'] }],
-    defaultPath: `${template.templateName.replace(/\s+/g, '_')}.json`,
+    defaultPath,
   });
   if (res.canceled || !res.filePath) return null;
   await templateManager.saveTemplate(template, res.filePath);
@@ -188,13 +190,14 @@ ipcMain.handle('pivot:saveTemplate', async (_, template: PivotTemplate) => {
 });
 
 ipcMain.handle('pivot:saveProject', async (_, payload: any) => {
+  const defaultPath = payload.defaultPath || `${(payload.datasetName || payload.template?.templateName || 'PivotCraft_Project').replace(/\s+/g, '_')}.pvc`;
   const res = await dialog.showSaveDialog(win!, {
     title: 'Save PivotCraft Workbook (.pvc)',
     filters: [
       { name: 'PivotCraft Workbook', extensions: ['pvc', 'pivotcraft'] },
       { name: 'All Files', extensions: ['*'] },
     ],
-    defaultPath: `${(payload.datasetName || payload.template?.templateName || 'PivotCraft_Project').replace(/\s+/g, '_')}.pvc`,
+    defaultPath,
   });
   if (res.canceled || !res.filePath) return null;
   await projectManager.saveProject(duckdbEngine, payload, res.filePath);

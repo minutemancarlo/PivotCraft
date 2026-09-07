@@ -37,6 +37,17 @@ export interface CalculatedFieldDefinition {
   isAlreadyPercent?: boolean;
   isEditable?: boolean;
   showTotal?: boolean;
+  totalMode?: 'sum' | 'formula' | 'avg' | 'min' | 'max';
+}
+
+export function resolveTotalMode(calc?: CalculatedFieldDefinition): 'sum' | 'formula' | 'avg' | 'min' | 'max' {
+  if (!calc) return 'sum';
+  if (calc.totalMode) return calc.totalMode;
+  if (!calc.formula || !calc.formula.trim()) return 'sum';
+  if (calc.format?.includes('%') || calc.format === '0.0%' || calc.isAlreadyPercent) {
+    return 'formula';
+  }
+  return 'sum';
 }
 
 export interface ColumnStyle {
@@ -79,6 +90,7 @@ export interface PivotTemplate {
   headerGroups?: HeaderGroupDefinition[];
   columnOrder?: string[];
   wrapHeaders?: boolean;
+  freezeFirstColumn?: boolean;
 }
 
 export interface PivotHierarchyNode {

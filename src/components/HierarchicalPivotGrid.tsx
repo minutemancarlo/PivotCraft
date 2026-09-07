@@ -16,6 +16,7 @@ import {
   Layers,
   GripVertical,
   WrapText,
+  Pin,
 } from 'lucide-react';
 import { PivotTemplate, PivotHierarchyNode, ColumnStyle, HeaderGroupDefinition } from '../types/pivot.js';
 import { RenameModal } from './RenameModal.js';
@@ -33,6 +34,7 @@ interface HierarchicalPivotGridProps {
   onToggleColumnEditability: (columnKey: string) => void;
   onSortByColumn: (columnKey: string) => void;
   onReorderColumns?: (newOrder: string[]) => void;
+  onToggleFreezeFirstColumn?: () => void;
   onLoadCsv: () => void;
   onLoadTemplate: () => void;
   onOpenPivotStudio: () => void;
@@ -52,6 +54,7 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
   onToggleColumnEditability,
   onSortByColumn,
   onReorderColumns,
+  onToggleFreezeFirstColumn,
   onLoadCsv,
   onLoadTemplate,
   onOpenPivotStudio,
@@ -316,8 +319,9 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
   };
 
   const hierarchyWidth = colWidths['hierarchy'] || 340;
+  const isFreezeFirstCol = template?.freezeFirstColumn !== false;
   const totalColumnsWidth = allColumns.reduce((sum, col) => sum + (colWidths[col.key] || 160), 0);
-  const totalGridWidth = hierarchyWidth + totalColumnsWidth + 32;
+  const totalGridWidth = hierarchyWidth + totalColumnsWidth + 16;
 
   const headerGroups = template?.headerGroups || [];
   const hasHeaderGroups = headerGroups.length > 0;
@@ -390,15 +394,17 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
             {hasHeaderGroups && (
               <div
                 style={{ minWidth: `${totalGridWidth}px` }}
-                className={`border-b flex items-center h-8 px-4 text-xs transition-colors ${
+                className={`border-b flex items-center h-8 pr-4 text-xs transition-colors ${
                   isDark ? 'bg-slate-900/95 border-slate-800' : 'bg-slate-50 border-slate-300'
                 }`}
               >
                 {/* Hierarchy Column Super-Header Spacer */}
                 <div
-                  style={{ width: `${hierarchyWidth}px`, minWidth: `${hierarchyWidth}px` }}
-                  className={`pr-4 h-full flex items-center border-r select-none ${
-                    isDark ? 'border-slate-800/80 text-slate-500' : 'border-slate-300 text-slate-400'
+                  style={{ width: `${hierarchyWidth}px`, minWidth: `${hierarchyWidth}px`, maxWidth: `${hierarchyWidth}px` }}
+                  className={`pl-4 pr-4 h-full flex items-center border-r select-none shrink-0 ${
+                    isFreezeFirstCol ? 'sticky left-0 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.15)]' : ''
+                  } ${
+                    isDark ? 'bg-slate-900 border-slate-800/80 text-slate-500' : 'bg-slate-50 border-slate-300 text-slate-400'
                   }`}
                 >
                   <span className="text-[10px] uppercase font-bold tracking-wider opacity-60">Categories & Metrics</span>
@@ -596,7 +602,7 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
               return (
                 <div
                   style={{ minWidth: `${totalGridWidth}px` }}
-                  className={`border-b ${hasAnyWrappedHeader ? 'flex items-stretch min-h-[40px] h-auto py-0' : 'flex items-center h-10'} px-4 text-xs font-bold transition-colors ${
+                  className={`border-b ${hasAnyWrappedHeader ? 'flex items-stretch min-h-[40px] h-auto py-0' : 'flex items-center h-10'} pr-4 text-xs font-bold transition-colors ${
                     isDark ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-slate-100 border-slate-300 text-slate-800'
                   }`}
                 >
@@ -607,10 +613,12 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
                       minWidth: `${hierarchyWidth}px`,
                       maxWidth: `${hierarchyWidth}px`,
                     }}
-                    className={`pr-4 flex ${hierShouldWrap ? 'items-start py-2' : 'items-center'} justify-between border-r group relative select-none font-bold ${
+                    className={`pl-4 pr-4 flex ${hierShouldWrap ? 'items-start py-2' : 'items-center'} justify-between border-r group relative select-none font-bold shrink-0 ${
                       activeMenuKey === 'hierarchy' ? 'z-[60]' : ''
                     } ${
-                      isDark ? 'border-slate-800/80 text-slate-300' : 'border-slate-300 text-slate-700'
+                      isFreezeFirstCol ? 'sticky left-0 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.15)]' : ''
+                    } ${
+                      isDark ? 'bg-slate-900 border-slate-800/80 text-slate-300' : 'bg-slate-100 border-slate-300 text-slate-700'
                     }`}
                   >
                     <span
@@ -683,6 +691,24 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
                           </div>
                           <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${hierStyle.wrapHeader ? 'bg-sky-500/20 text-sky-400' : (isDark ? 'bg-slate-800 text-slate-400' : 'bg-slate-100 text-slate-600')}`}>
                             {hierStyle.wrapHeader ? 'ON' : 'OFF'}
+                          </span>
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            onToggleFreezeFirstColumn?.();
+                            setActiveMenuKey(null);
+                          }}
+                          className={`w-full text-left px-3 py-1.5 flex items-center justify-between cursor-pointer ${
+                            isFreezeFirstCol ? 'text-amber-500 font-semibold' : (isDark ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-slate-100 text-slate-700')
+                          }`}
+                        >
+                          <div className="flex items-center space-x-2">
+                            <Pin className="w-3.5 h-3.5" />
+                            <span>Freeze First Column (Pane)</span>
+                          </div>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${isFreezeFirstCol ? 'bg-amber-500/20 text-amber-400' : (isDark ? 'bg-slate-800 text-slate-400' : 'bg-slate-100 text-slate-600')}`}>
+                            {isFreezeFirstCol ? 'ON' : 'OFF'}
                           </span>
                         </button>
 
@@ -1253,7 +1279,7 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
                     height: `${virtualRow.size}px`,
                     transform: `translateY(${virtualRow.start}px)`,
                   }}
-                  className={`flex items-center px-4 text-xs border-b transition-colors ${
+                  className={`flex items-center pr-4 text-xs border-b transition-colors ${
                   isGrandTotal
                     ? isDark
                       ? 'bg-slate-800/95 font-bold text-slate-100 border-t-2 border-slate-600 border-b-2 border-slate-700 shadow-sm'
@@ -1272,14 +1298,27 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
                   style={{
                     width: `${hierarchyWidth}px`,
                     minWidth: `${hierarchyWidth}px`,
-                    paddingLeft: `${indentPx}px`,
-                    backgroundColor: hierColStyle.cellBgColor || undefined,
+                    maxWidth: `${hierarchyWidth}px`,
+                    paddingLeft: `${indentPx + 16}px`,
+                    backgroundColor:
+                      hierColStyle.cellBgColor ||
+                      (isGrandTotal
+                        ? (isDark ? '#1e293b' : '#e2e8f0')
+                        : isSubtotal
+                        ? (isDark ? '#0f172a' : '#f1f5f9')
+                        : (isDark ? '#020617' : '#ffffff')),
                     color: hierColStyle.cellTextColor || undefined,
                   }}
-                  className={`pr-4 flex items-center space-x-2 truncate border-r ${
+                  className={`pr-4 flex items-center space-x-2 truncate border-r shrink-0 ${
                     hierColStyle.isBold ? 'font-bold' : ''
                   } ${hierColStyle.isItalic ? 'italic' : ''} ${
-                    isDark ? 'border-slate-800/40' : 'border-slate-200'
+                    isFreezeFirstCol ? 'sticky left-0 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)]' : ''
+                  } ${
+                    isGrandTotal
+                      ? isDark ? 'border-slate-700' : 'border-slate-300'
+                      : isSubtotal
+                      ? isDark ? 'border-slate-800/60' : 'border-slate-200'
+                      : isDark ? 'border-slate-800/40' : 'border-slate-200'
                   }`}
                 >
                   {!node.isLeaf && !isGrandTotal ? (
@@ -1349,7 +1388,7 @@ export const HierarchicalPivotGrid: React.FC<HierarchicalPivotGridProps> = ({
                     formattedVal = `(${formattedVal})`;
                   }
 
-                  const isEditableCell = col.isEditable && !isGrandTotal && (!isSubtotal || !isTotalHidden);
+                  const isEditableCell = col.isEditable && node.isLeaf;
                   const colW = colWidths[col.key] || 160;
 
                   return (
