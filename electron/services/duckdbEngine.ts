@@ -1,6 +1,6 @@
 import { createRequire } from 'module';
 import { Parser } from 'expr-eval';
-import { PivotTemplate, PivotHierarchyNode, FilterDefinition, ValueMetricDefinition, CalculatedFieldDefinition, resolveTotalMode } from '../../src/types/pivot.js';
+import { PivotTemplate, PivotHierarchyNode, FilterDefinition, ValueMetricDefinition, CalculatedFieldDefinition, resolveTotalMode, roundToDecimals, getColumnDecimals, getEffectiveDecimals } from '../../src/types/pivot.js';
 import { createConfiguredParser, preprocessFormula } from '../../src/utils/formulaEngine.js';
 
 const require = createRequire(import.meta.url);
@@ -479,7 +479,7 @@ export class DuckDbPivotEngine {
       }
 
       // Evaluate Calculated Fields
-      this.evaluateCalculations(node, template.calculatedFields);
+      this.evaluateCalculations(node, template.calculatedFields, template);
 
       if (isGrandTotal) {
         grandTotalNode = node;
@@ -526,25 +526,53 @@ export class DuckDbPivotEngine {
         for (const calc of template.calculatedFields || []) {
           const key = calc.alias || calc.name;
           const mode = resolveTotalMode(calc);
+          delete parent.editableOverrides[key];
 
-          if (mode === 'sum') {
-            const sum = parent.children.reduce((acc, c) => acc + getEffectiveCalcVal(c, key), 0);
+          const hasFormula = Boolean(calc.formula && calc.formula.trim());
+          const effectiveDecimals = getEffectiveDecimals(calc);
+          const isPct = Boolean(calc.format?.includes('%') || calc.isAlreadyPercent);
+
+          if (hasFormula && !isPct && mode !== 'avg' && mode !== 'min' && mode !== 'max') {
+            let sum = parent.children.reduce(
+              (acc, c) => acc + roundToDecimals(getEffectiveCalcVal(c, key), effectiveDecimals),
+              0
+            );
+            sum = roundToDecimals(sum, effectiveDecimals);
+            parent.calculatedValues[key] = sum;
+            parent.formattedValues[key] = this.formatValue(sum, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+          } else if (mode === 'sum') {
+            let sum = parent.children.reduce(
+              (acc, c) => acc + (hasFormula ? roundToDecimals(getEffectiveCalcVal(c, key), effectiveDecimals) : getEffectiveCalcVal(c, key)),
+              0
+            );
+            if (hasFormula) {
+              sum = roundToDecimals(sum, effectiveDecimals);
+            }
             parent.calculatedValues[key] = sum;
             parent.formattedValues[key] = this.formatValue(sum, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
           } else if (mode === 'avg') {
-            const avg = parent.children.reduce((acc, c) => acc + getEffectiveCalcVal(c, key), 0) / (parent.children.length || 1);
+            let avg = parent.children.reduce((acc, c) => acc + (hasFormula ? roundToDecimals(getEffectiveCalcVal(c, key), effectiveDecimals) : getEffectiveCalcVal(c, key)), 0) / (parent.children.length || 1);
+            if (hasFormula) {
+              avg = roundToDecimals(avg, effectiveDecimals);
+            }
             parent.calculatedValues[key] = avg;
             parent.formattedValues[key] = this.formatValue(avg, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
           } else if (mode === 'min') {
-            const min = Math.min(...parent.children.map((c) => getEffectiveCalcVal(c, key)));
+            let min = Math.min(...parent.children.map((c) => hasFormula ? roundToDecimals(getEffectiveCalcVal(c, key), effectiveDecimals) : getEffectiveCalcVal(c, key)));
+            if (hasFormula) {
+              min = roundToDecimals(min, effectiveDecimals);
+            }
             parent.calculatedValues[key] = min;
             parent.formattedValues[key] = this.formatValue(min, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
           } else if (mode === 'max') {
-            const max = Math.max(...parent.children.map((c) => getEffectiveCalcVal(c, key)));
+            let max = Math.max(...parent.children.map((c) => hasFormula ? roundToDecimals(getEffectiveCalcVal(c, key), effectiveDecimals) : getEffectiveCalcVal(c, key)));
+            if (hasFormula) {
+              max = roundToDecimals(max, effectiveDecimals);
+            }
             parent.calculatedValues[key] = max;
             parent.formattedValues[key] = this.formatValue(max, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
           } else if (mode === 'formula') {
-            this.evaluateCalculations(parent, [calc]);
+            this.evaluateCalculations(parent, [calc], template, true);
           }
         }
       }
@@ -554,29 +582,62 @@ export class DuckDbPivotEngine {
       for (const calc of template.calculatedFields || []) {
         const key = calc.alias || calc.name;
         const mode = resolveTotalMode(calc);
+        delete grandTotalNode.editableOverrides[key];
 
-        if (mode === 'sum') {
-          const sum = rootNodes.reduce((acc, r) => acc + getEffectiveCalcVal(r, key), 0);
+        const hasFormula = Boolean(calc.formula && calc.formula.trim());
+        const effectiveDecimals = getEffectiveDecimals(calc);
+        const isPct = Boolean(calc.format?.includes('%') || calc.isAlreadyPercent);
+
+        if (hasFormula && !isPct && mode !== 'avg' && mode !== 'min' && mode !== 'max') {
+          let sum = rootNodes.length > 0
+            ? rootNodes.reduce(
+                (acc, r) => acc + roundToDecimals(getEffectiveCalcVal(r, key), effectiveDecimals),
+                0
+              )
+            : (typeof grandTotalNode.calculatedValues[key] === 'number'
+                ? roundToDecimals(grandTotalNode.calculatedValues[key], effectiveDecimals)
+                : 0);
+          sum = roundToDecimals(sum, effectiveDecimals);
+          grandTotalNode.calculatedValues[key] = sum;
+          grandTotalNode.formattedValues[key] = this.formatValue(sum, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+        } else if (mode === 'sum') {
+          let sum = rootNodes.length > 0
+            ? rootNodes.reduce((acc, r) => acc + (hasFormula ? roundToDecimals(getEffectiveCalcVal(r, key), effectiveDecimals) : getEffectiveCalcVal(r, key)), 0)
+            : (typeof grandTotalNode.calculatedValues[key] === 'number' ? grandTotalNode.calculatedValues[key] : 0);
+          if (hasFormula) {
+            sum = roundToDecimals(sum, effectiveDecimals);
+          }
           grandTotalNode.calculatedValues[key] = sum;
           grandTotalNode.formattedValues[key] = this.formatValue(sum, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
         } else if (mode === 'avg') {
-          const avg = rootNodes.reduce((acc, r) => acc + getEffectiveCalcVal(r, key), 0) / (rootNodes.length || 1);
+          let avg = rootNodes.length > 0
+            ? (rootNodes.reduce((acc, r) => acc + (hasFormula ? roundToDecimals(getEffectiveCalcVal(r, key), effectiveDecimals) : getEffectiveCalcVal(r, key)), 0) / rootNodes.length)
+            : (typeof grandTotalNode.calculatedValues[key] === 'number' ? grandTotalNode.calculatedValues[key] : 0);
+          if (hasFormula) {
+            avg = roundToDecimals(avg, effectiveDecimals);
+          }
           grandTotalNode.calculatedValues[key] = avg;
           grandTotalNode.formattedValues[key] = this.formatValue(avg, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
         } else if (mode === 'min') {
           if (rootNodes.length > 0) {
-            const min = Math.min(...rootNodes.map((r) => getEffectiveCalcVal(r, key)));
+            let min = Math.min(...rootNodes.map((r) => hasFormula ? roundToDecimals(getEffectiveCalcVal(r, key), effectiveDecimals) : getEffectiveCalcVal(r, key)));
+            if (hasFormula) {
+              min = roundToDecimals(min, effectiveDecimals);
+            }
             grandTotalNode.calculatedValues[key] = min;
             grandTotalNode.formattedValues[key] = this.formatValue(min, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
           }
         } else if (mode === 'max') {
           if (rootNodes.length > 0) {
-            const max = Math.max(...rootNodes.map((r) => getEffectiveCalcVal(r, key)));
+            let max = Math.max(...rootNodes.map((r) => hasFormula ? roundToDecimals(getEffectiveCalcVal(r, key), effectiveDecimals) : getEffectiveCalcVal(r, key)));
+            if (hasFormula) {
+              max = roundToDecimals(max, effectiveDecimals);
+            }
             grandTotalNode.calculatedValues[key] = max;
             grandTotalNode.formattedValues[key] = this.formatValue(max, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
           }
         } else if (mode === 'formula') {
-          this.evaluateCalculations(grandTotalNode, [calc]);
+          this.evaluateCalculations(grandTotalNode, [calc], template, true);
         }
       }
     }
@@ -646,12 +707,20 @@ export class DuckDbPivotEngine {
     return resultList;
   }
 
-  public evaluateCalculations(node: PivotHierarchyNode, calculatedFields: CalculatedFieldDefinition[] = []) {
+  public evaluateCalculations(
+    node: PivotHierarchyNode,
+    calculatedFields: CalculatedFieldDefinition[] = [],
+    template?: PivotTemplate,
+    shouldRound = false
+  ) {
     for (const calc of calculatedFields) {
       const key = calc.alias || calc.name;
+      const mode = resolveTotalMode(calc);
+      const effectiveDecimals = getEffectiveDecimals(calc);
+
       if (!calc.formula || !calc.formula.trim()) {
         // Pure manual input column without formula (defaults to 0 or manual override)
-        const val = node.editableOverrides[key] ?? 0;
+        const val = node.editableOverrides[key] ?? (typeof node.calculatedValues[key] === 'number' ? node.calculatedValues[key] : 0);
         node.calculatedValues[key] = val;
         node.formattedValues[key] = this.formatValue(val, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
         continue;
@@ -672,14 +741,14 @@ export class DuckDbPivotEngine {
 
           // 1. Check for Row Label keyword: [Row], [RowLabel], [Label], [GroupValue]
           if (['row', 'rowlabel', 'row_label', 'label', 'group', 'groupvalue', 'group_value', 'displaytext', 'display_text'].includes(normalized)) {
-            val = node.displayText || node.groupValue || '';
+            val = node.groupValue || node.displayText || '';
             scope[varName] = val;
             return varName;
           }
 
           // 2. Check if colName references the node's grouping field (e.g. [Month] or [Date])
           if (node.groupField && node.groupField.trim().toLowerCase() === normalized) {
-            val = node.displayText || node.groupValue || '';
+            val = node.groupValue || node.displayText || '';
             scope[varName] = val;
             return varName;
           }
@@ -702,6 +771,31 @@ export class DuckDbPivotEngine {
               val = node.numericMetrics[foundMetricKey];
             } else if (foundCalcKey !== undefined) {
               val = typeof node.calculatedValues[foundCalcKey] === 'number' ? node.calculatedValues[foundCalcKey] : Number(node.calculatedValues[foundCalcKey]) || 0;
+            } else if (template) {
+              // Check template values (matching by column name or alias)
+              const matchedVal = template.values?.find(
+                (v) => v.column.trim().toLowerCase() === normalized || (v.alias && v.alias.trim().toLowerCase() === normalized)
+              );
+              if (matchedVal) {
+                const mKey = matchedVal.alias || `${matchedVal.aggregation}_${matchedVal.column}`;
+                val = node.editableOverrides[mKey] ?? node.numericMetrics[mKey] ?? 0;
+              } else {
+                // Check template calculated fields (matching by name or alias)
+                const matchedCalc = template.calculatedFields?.find(
+                  (c) => c.name.trim().toLowerCase() === normalized || (c.alias && c.alias.trim().toLowerCase() === normalized)
+                );
+                if (matchedCalc) {
+                  const cKey = matchedCalc.alias || matchedCalc.name;
+                  const cVal = node.editableOverrides[cKey] ?? node.calculatedValues[cKey];
+                  val = typeof cVal === 'number' ? cVal : Number(cVal) || 0;
+                } else {
+                  // Suffix fallback for numericMetrics (e.g. key "SUM_Amount" matching "Amount")
+                  const suffixMetricKey = Object.keys(node.numericMetrics).find((k) => k.trim().toLowerCase().endsWith(`_${normalized}`));
+                  if (suffixMetricKey !== undefined) {
+                    val = node.numericMetrics[suffixMetricKey];
+                  }
+                }
+              }
             }
           }
           scope[varName] = val;
@@ -709,11 +803,21 @@ export class DuckDbPivotEngine {
         });
 
         const expr = this.parser.parse(formula);
-        const result = expr.evaluate(scope);
-        // Store exact unrounded computation in calculatedValues
-        node.calculatedValues[key] = result;
+        let result = expr.evaluate(scope);
 
-        // Display formatting only rounds the presentation string
+        // Round totals for formula columns (subtotals in formula mode and grand totals)
+        if (typeof result === 'number') {
+          if (!isFinite(result) || isNaN(result)) {
+            result = 0;
+          } else if (shouldRound || node.isGrandTotal || (node.isSubtotal && mode === 'formula')) {
+            result = roundToDecimals(result, effectiveDecimals);
+          }
+        }
+
+        node.calculatedValues[key] = result;
+        delete node.editableOverrides[key];
+
+        // Display formatting
         if (typeof result === 'number') {
           node.formattedValues[key] = this.formatValue(result, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
         } else {

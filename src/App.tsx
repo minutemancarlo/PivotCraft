@@ -9,7 +9,7 @@ import { StatusBar } from './components/StatusBar.js';
 import { ToastContainer, ToastItem } from './components/Toast.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { UpdateModal, UpdateInfo, UpdateProgress } from './components/UpdateModal.js';
-import { PivotTemplate, PivotHierarchyNode, FilterDefinition, ValueMetricDefinition, ColumnStyle, HeaderGroupDefinition, PivotCraftProject, CalculatedFieldDefinition, resolveTotalMode } from './types/pivot.js';
+import { PivotTemplate, PivotHierarchyNode, FilterDefinition, ValueMetricDefinition, ColumnStyle, HeaderGroupDefinition, PivotCraftProject, CalculatedFieldDefinition, resolveTotalMode, roundToDecimals, getColumnDecimals, getEffectiveDecimals } from './types/pivot.js';
 import { globalFormulaParser, preprocessFormula } from './utils/formulaEngine.js';
 
 export const App: React.FC = () => {
@@ -96,7 +96,7 @@ export const App: React.FC = () => {
   const [currentTemplateFile, setCurrentTemplateFile] = useState<{ fileName: string; filePath: string } | null>(null);
 
   // Auto-Updater State
-  const [currentVersion, setCurrentVersion] = useState<string>('1.0.5');
+  const [currentVersion, setCurrentVersion] = useState<string>('1.0.6');
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
   const [updateStatus, setUpdateStatus] = useState<'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'>('not-available');
@@ -472,8 +472,16 @@ export const App: React.FC = () => {
     return formatted;
   };
 
-  const recalculateSingleFormulaForNode = (node: PivotHierarchyNode, calc: CalculatedFieldDefinition) => {
+  const recalculateSingleFormulaForNode = (
+    node: PivotHierarchyNode,
+    calc: CalculatedFieldDefinition,
+    tpl?: PivotTemplate,
+    shouldRound?: boolean
+  ) => {
     const key = calc.alias || calc.name;
+    const mode = resolveTotalMode(calc);
+    const effectiveDecimals = getEffectiveDecimals(calc);
+
     if (!calc.formula || !calc.formula.trim()) {
       // Pure manual input column without formula
       const currentVal = node.editableOverrides[key] ?? (typeof node.calculatedValues[key] === 'number' ? node.calculatedValues[key] : 0);
@@ -493,14 +501,14 @@ export const App: React.FC = () => {
 
         // 1. Check for Row Label keyword: [Row], [RowLabel], [Label], [GroupValue]
         if (['row', 'rowlabel', 'row_label', 'label', 'group', 'groupvalue', 'group_value', 'displaytext', 'display_text'].includes(normalized)) {
-          val = node.displayText || node.groupValue || '';
+          val = node.groupValue || node.displayText || '';
           scope[varName] = val;
           return varName;
         }
 
         // 2. Check if colName references the node's grouping field (e.g. [Month] or [Date])
         if (node.groupField && node.groupField.trim().toLowerCase() === normalized) {
-          val = node.displayText || node.groupValue || '';
+          val = node.groupValue || node.displayText || '';
           scope[varName] = val;
           return varName;
         }
@@ -523,6 +531,31 @@ export const App: React.FC = () => {
             val = node.numericMetrics[foundMetricKey];
           } else if (foundCalcKey !== undefined) {
             val = typeof node.calculatedValues[foundCalcKey] === 'number' ? node.calculatedValues[foundCalcKey] : Number(node.calculatedValues[foundCalcKey]) || 0;
+          } else if (tpl) {
+            // Check template values (matching by column name or alias)
+            const matchedVal = tpl.values?.find(
+              (v) => v.column.trim().toLowerCase() === normalized || (v.alias && v.alias.trim().toLowerCase() === normalized)
+            );
+            if (matchedVal) {
+              const mKey = matchedVal.alias || `${matchedVal.aggregation}_${matchedVal.column}`;
+              val = node.editableOverrides[mKey] ?? node.numericMetrics[mKey] ?? 0;
+            } else {
+              // Check template calculated fields (matching by name or alias)
+              const matchedCalc = tpl.calculatedFields?.find(
+                (c) => c.name.trim().toLowerCase() === normalized || (c.alias && c.alias.trim().toLowerCase() === normalized)
+              );
+              if (matchedCalc) {
+                const cKey = matchedCalc.alias || matchedCalc.name;
+                const cVal = node.editableOverrides[cKey] ?? node.calculatedValues[cKey];
+                val = typeof cVal === 'number' ? cVal : Number(cVal) || 0;
+              } else {
+                // Suffix fallback for numericMetrics (e.g. key "SUM_Amount" matching "Amount")
+                const suffixMetricKey = Object.keys(node.numericMetrics).find((k) => k.trim().toLowerCase().endsWith(`_${normalized}`));
+                if (suffixMetricKey !== undefined) {
+                  val = node.numericMetrics[suffixMetricKey];
+                }
+              }
+            }
           }
         }
         scope[varName] = val;
@@ -530,11 +563,21 @@ export const App: React.FC = () => {
       });
 
       const expr = globalFormulaParser.parse(formula);
-      const result = expr.evaluate(scope);
-      // Store the exact unrounded computation in calculatedValues
-      node.calculatedValues[key] = result;
+      let result = expr.evaluate(scope);
 
-      // Display formatting only rounds the presentation string
+      // Round totals for formula columns (subtotals in formula mode and grand totals)
+      if (typeof result === 'number') {
+        if (!isFinite(result) || isNaN(result)) {
+          result = 0;
+        } else if (shouldRound || node.isGrandTotal || (node.isSubtotal && mode === 'formula')) {
+          result = roundToDecimals(result, effectiveDecimals);
+        }
+      }
+
+      node.calculatedValues[key] = result;
+      delete node.editableOverrides[key];
+
+      // Display formatting
       if (typeof result === 'number') {
         node.formattedValues[key] = formatValue(result, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
       } else {
@@ -548,7 +591,7 @@ export const App: React.FC = () => {
 
   const recalculateFormulasForNode = (node: PivotHierarchyNode, tpl: PivotTemplate) => {
     for (const calc of tpl.calculatedFields) {
-      recalculateSingleFormulaForNode(node, calc);
+      recalculateSingleFormulaForNode(node, calc, tpl);
     }
   };
 
@@ -597,9 +640,10 @@ export const App: React.FC = () => {
         for (const val of tpl.values) {
           const colKey = val.alias || `${val.aggregation}_${val.column}`;
           const agg = (val.aggregation || 'SUM').toUpperCase();
+          const valDecimals = getEffectiveDecimals(val);
 
           if (agg === 'SUM') {
-            const sum = parent.children.reduce((acc, c) => acc + getEffectiveMetric(c, colKey), 0);
+            const sum = roundToDecimals(parent.children.reduce((acc, c) => acc + getEffectiveMetric(c, colKey), 0), valDecimals);
             parent.numericMetrics[colKey] = sum;
             delete parent.editableOverrides[colKey];
             parent.formattedValues[colKey] = formatValue(sum, val.format, val.decimalPlaces, val.isAlreadyPercent);
@@ -612,19 +656,19 @@ export const App: React.FC = () => {
               parent.formattedValues[colKey] = formatValue(count, val.format, val.decimalPlaces, val.isAlreadyPercent);
             }
           } else if (agg === 'MIN') {
-            const min = Math.min(...parent.children.map((c) => getEffectiveMetric(c, colKey)));
+            const min = roundToDecimals(Math.min(...parent.children.map((c) => getEffectiveMetric(c, colKey))), valDecimals);
             parent.numericMetrics[colKey] = min;
             delete parent.editableOverrides[colKey];
             parent.formattedValues[colKey] = formatValue(min, val.format, val.decimalPlaces, val.isAlreadyPercent);
           } else if (agg === 'MAX') {
-            const max = Math.max(...parent.children.map((c) => getEffectiveMetric(c, colKey)));
+            const max = roundToDecimals(Math.max(...parent.children.map((c) => getEffectiveMetric(c, colKey))), valDecimals);
             parent.numericMetrics[colKey] = max;
             delete parent.editableOverrides[colKey];
             parent.formattedValues[colKey] = formatValue(max, val.format, val.decimalPlaces, val.isAlreadyPercent);
           } else if (agg === 'AVG' || agg === 'AVERAGE') {
             const hasOverride = parent.children.some((c) => c.editableOverrides[colKey] !== undefined);
             if (hasOverride) {
-              const avg = parent.children.reduce((acc, c) => acc + getEffectiveMetric(c, colKey), 0) / (parent.children.length || 1);
+              const avg = roundToDecimals(parent.children.reduce((acc, c) => acc + getEffectiveMetric(c, colKey), 0) / (parent.children.length || 1), valDecimals);
               parent.numericMetrics[colKey] = avg;
               delete parent.editableOverrides[colKey];
               parent.formattedValues[colKey] = formatValue(avg, val.format, val.decimalPlaces, val.isAlreadyPercent);
@@ -636,29 +680,53 @@ export const App: React.FC = () => {
         for (const calc of tpl.calculatedFields) {
           const calcKey = calc.alias || calc.name;
           const mode = resolveTotalMode(calc);
+          delete parent.editableOverrides[calcKey];
 
-          if (mode === 'sum') {
-            const sum = parent.children.reduce((acc, c) => acc + getEffectiveCalc(c, calcKey), 0);
+          const hasFormula = Boolean(calc.formula && calc.formula.trim());
+          const effectiveDecimals = getEffectiveDecimals(calc);
+          const isPct = Boolean(calc.format?.includes('%') || calc.isAlreadyPercent);
+
+          if (hasFormula && !isPct && mode !== 'avg' && mode !== 'min' && mode !== 'max') {
+            let sum = parent.children.reduce(
+              (acc, c) => acc + roundToDecimals(getEffectiveCalc(c, calcKey), effectiveDecimals),
+              0
+            );
+            sum = roundToDecimals(sum, effectiveDecimals);
             parent.calculatedValues[calcKey] = sum;
-            delete parent.editableOverrides[calcKey];
+            parent.formattedValues[calcKey] = formatValue(sum, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+          } else if (mode === 'sum') {
+            let sum = parent.children.reduce(
+              (acc, c) => acc + (hasFormula ? roundToDecimals(getEffectiveCalc(c, calcKey), effectiveDecimals) : getEffectiveCalc(c, calcKey)),
+              0
+            );
+            if (hasFormula) {
+              sum = roundToDecimals(sum, effectiveDecimals);
+            }
+            parent.calculatedValues[calcKey] = sum;
             parent.formattedValues[calcKey] = formatValue(sum, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
           } else if (mode === 'avg') {
-            const avg = parent.children.reduce((acc, c) => acc + getEffectiveCalc(c, calcKey), 0) / (parent.children.length || 1);
+            let avg = parent.children.reduce((acc, c) => acc + (hasFormula ? roundToDecimals(getEffectiveCalc(c, calcKey), effectiveDecimals) : getEffectiveCalc(c, calcKey)), 0) / (parent.children.length || 1);
+            if (hasFormula) {
+              avg = roundToDecimals(avg, effectiveDecimals);
+            }
             parent.calculatedValues[calcKey] = avg;
-            delete parent.editableOverrides[calcKey];
             parent.formattedValues[calcKey] = formatValue(avg, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
           } else if (mode === 'min') {
-            const min = Math.min(...parent.children.map((c) => getEffectiveCalc(c, calcKey)));
+            let min = Math.min(...parent.children.map((c) => hasFormula ? roundToDecimals(getEffectiveCalc(c, calcKey), effectiveDecimals) : getEffectiveCalc(c, calcKey)));
+            if (hasFormula) {
+              min = roundToDecimals(min, effectiveDecimals);
+            }
             parent.calculatedValues[calcKey] = min;
-            delete parent.editableOverrides[calcKey];
             parent.formattedValues[calcKey] = formatValue(min, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
           } else if (mode === 'max') {
-            const max = Math.max(...parent.children.map((c) => getEffectiveCalc(c, calcKey)));
+            let max = Math.max(...parent.children.map((c) => hasFormula ? roundToDecimals(getEffectiveCalc(c, calcKey), effectiveDecimals) : getEffectiveCalc(c, calcKey)));
+            if (hasFormula) {
+              max = roundToDecimals(max, effectiveDecimals);
+            }
             parent.calculatedValues[calcKey] = max;
-            delete parent.editableOverrides[calcKey];
             parent.formattedValues[calcKey] = formatValue(max, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
           } else if (mode === 'formula') {
-            recalculateSingleFormulaForNode(parent, calc);
+            recalculateSingleFormulaForNode(parent, calc, tpl, true);
           }
         }
       }
@@ -668,45 +736,40 @@ export const App: React.FC = () => {
     if (grandTotalNode) {
       const rootNodes = nonGrandTotalNodes.filter((n) => n.level === 1);
 
-      // 1. Recalculate value metrics for Grand Total
-      for (const val of tpl.values) {
-        const colKey = val.alias || `${val.aggregation}_${val.column}`;
-        const agg = (val.aggregation || 'SUM').toUpperCase();
-
-        if (agg === 'SUM') {
-          const sum = rootNodes.reduce((acc, r) => acc + getEffectiveMetric(r, colKey), 0);
-          grandTotalNode.numericMetrics[colKey] = sum;
+      // 1. Recalculate value metrics for Grand Total (only if rootNodes exist)
+      if (rootNodes.length > 0) {
+        for (const val of tpl.values) {
+          const colKey = val.alias || `${val.aggregation}_${val.column}`;
+          const agg = (val.aggregation || 'SUM').toUpperCase();
           delete grandTotalNode.editableOverrides[colKey];
-          grandTotalNode.formattedValues[colKey] = formatValue(sum, val.format, val.decimalPlaces, val.isAlreadyPercent);
-        } else if (agg === 'COUNT') {
-          const hasOverride = rootNodes.some((r) => r.editableOverrides[colKey] !== undefined);
-          if (hasOverride) {
-            const count = rootNodes.reduce((acc, r) => acc + getEffectiveMetric(r, colKey), 0);
-            grandTotalNode.numericMetrics[colKey] = count;
-            delete grandTotalNode.editableOverrides[colKey];
-            grandTotalNode.formattedValues[colKey] = formatValue(count, val.format, val.decimalPlaces, val.isAlreadyPercent);
-          }
-        } else if (agg === 'MIN') {
-          if (rootNodes.length > 0) {
-            const min = Math.min(...rootNodes.map((r) => getEffectiveMetric(r, colKey)));
+          const valDecimals = getEffectiveDecimals(val);
+
+          if (agg === 'SUM') {
+            const sum = roundToDecimals(rootNodes.reduce((acc, r) => acc + getEffectiveMetric(r, colKey), 0), valDecimals);
+            grandTotalNode.numericMetrics[colKey] = sum;
+            grandTotalNode.formattedValues[colKey] = formatValue(sum, val.format, val.decimalPlaces, val.isAlreadyPercent);
+          } else if (agg === 'COUNT' || agg === 'COUNT_DISTINCT') {
+            const hasOverride = rootNodes.some((r) => r.editableOverrides[colKey] !== undefined);
+            if (hasOverride) {
+              const count = rootNodes.reduce((acc, r) => acc + getEffectiveMetric(r, colKey), 0);
+              grandTotalNode.numericMetrics[colKey] = count;
+              grandTotalNode.formattedValues[colKey] = formatValue(count, val.format, val.decimalPlaces, val.isAlreadyPercent);
+            }
+          } else if (agg === 'MIN') {
+            const min = roundToDecimals(Math.min(...rootNodes.map((r) => getEffectiveMetric(r, colKey))), valDecimals);
             grandTotalNode.numericMetrics[colKey] = min;
-            delete grandTotalNode.editableOverrides[colKey];
             grandTotalNode.formattedValues[colKey] = formatValue(min, val.format, val.decimalPlaces, val.isAlreadyPercent);
-          }
-        } else if (agg === 'MAX') {
-          if (rootNodes.length > 0) {
-            const max = Math.max(...rootNodes.map((r) => getEffectiveMetric(r, colKey)));
+          } else if (agg === 'MAX') {
+            const max = roundToDecimals(Math.max(...rootNodes.map((r) => getEffectiveMetric(r, colKey))), valDecimals);
             grandTotalNode.numericMetrics[colKey] = max;
-            delete grandTotalNode.editableOverrides[colKey];
             grandTotalNode.formattedValues[colKey] = formatValue(max, val.format, val.decimalPlaces, val.isAlreadyPercent);
-          }
-        } else if (agg === 'AVG' || agg === 'AVERAGE') {
-          const hasOverride = rootNodes.some((r) => r.editableOverrides[colKey] !== undefined);
-          if (hasOverride) {
-            const avg = rootNodes.reduce((acc, r) => acc + getEffectiveMetric(r, colKey), 0) / (rootNodes.length || 1);
-            grandTotalNode.numericMetrics[colKey] = avg;
-            delete grandTotalNode.editableOverrides[colKey];
-            grandTotalNode.formattedValues[colKey] = formatValue(avg, val.format, val.decimalPlaces, val.isAlreadyPercent);
+          } else if (agg === 'AVG' || agg === 'AVERAGE') {
+            const hasOverride = rootNodes.some((r) => r.editableOverrides[colKey] !== undefined);
+            if (hasOverride) {
+              const avg = roundToDecimals(rootNodes.reduce((acc, r) => acc + getEffectiveMetric(r, colKey), 0) / (rootNodes.length || 1), valDecimals);
+              grandTotalNode.numericMetrics[colKey] = avg;
+              grandTotalNode.formattedValues[colKey] = formatValue(avg, val.format, val.decimalPlaces, val.isAlreadyPercent);
+            }
           }
         }
       }
@@ -715,31 +778,59 @@ export const App: React.FC = () => {
       for (const calc of tpl.calculatedFields) {
         const calcKey = calc.alias || calc.name;
         const mode = resolveTotalMode(calc);
+        delete grandTotalNode.editableOverrides[calcKey];
 
-        if (mode === 'sum') {
-          const sum = rootNodes.reduce((acc, r) => acc + getEffectiveCalc(r, calcKey), 0);
+        const hasFormula = Boolean(calc.formula && calc.formula.trim());
+        const effectiveDecimals = getEffectiveDecimals(calc);
+        const isPct = Boolean(calc.format?.includes('%') || calc.isAlreadyPercent);
+
+        if (hasFormula && !isPct && mode !== 'avg' && mode !== 'min' && mode !== 'max') {
+          let sum = rootNodes.length > 0
+            ? rootNodes.reduce((acc, r) => acc + roundToDecimals(getEffectiveCalc(r, calcKey), effectiveDecimals), 0)
+            : (typeof grandTotalNode.calculatedValues[calcKey] === 'number'
+                ? roundToDecimals(grandTotalNode.calculatedValues[calcKey], effectiveDecimals)
+                : 0);
+          sum = roundToDecimals(sum, effectiveDecimals);
           grandTotalNode.calculatedValues[calcKey] = sum;
-          delete grandTotalNode.editableOverrides[calcKey];
+          grandTotalNode.formattedValues[calcKey] = formatValue(sum, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
+        } else if (mode === 'sum') {
+          let sum = rootNodes.length > 0
+            ? rootNodes.reduce((acc, r) => acc + (hasFormula ? roundToDecimals(getEffectiveCalc(r, calcKey), effectiveDecimals) : getEffectiveCalc(r, calcKey)), 0)
+            : (typeof grandTotalNode.calculatedValues[calcKey] === 'number' ? grandTotalNode.calculatedValues[calcKey] : 0);
+          if (hasFormula) {
+            sum = roundToDecimals(sum, effectiveDecimals);
+          }
+          grandTotalNode.calculatedValues[calcKey] = sum;
           grandTotalNode.formattedValues[calcKey] = formatValue(sum, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
         } else if (mode === 'avg') {
-          const avg = rootNodes.reduce((acc, r) => acc + getEffectiveCalc(r, calcKey), 0) / (rootNodes.length || 1);
+          let avg = rootNodes.length > 0
+            ? (rootNodes.reduce((acc, r) => acc + (hasFormula ? roundToDecimals(getEffectiveCalc(r, calcKey), effectiveDecimals) : getEffectiveCalc(r, calcKey)), 0) / rootNodes.length)
+            : (typeof grandTotalNode.calculatedValues[calcKey] === 'number' ? grandTotalNode.calculatedValues[calcKey] : 0);
+          if (hasFormula) {
+            avg = roundToDecimals(avg, effectiveDecimals);
+          }
           grandTotalNode.calculatedValues[calcKey] = avg;
-          delete grandTotalNode.editableOverrides[calcKey];
           grandTotalNode.formattedValues[calcKey] = formatValue(avg, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
         } else if (mode === 'min') {
           if (rootNodes.length > 0) {
-            const min = Math.min(...rootNodes.map((r) => getEffectiveCalc(r, calcKey)));
+            let min = Math.min(...rootNodes.map((r) => hasFormula ? roundToDecimals(getEffectiveCalc(r, calcKey), effectiveDecimals) : getEffectiveCalc(r, calcKey)));
+            if (hasFormula) {
+              min = roundToDecimals(min, effectiveDecimals);
+            }
             grandTotalNode.calculatedValues[calcKey] = min;
             grandTotalNode.formattedValues[calcKey] = formatValue(min, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
           }
         } else if (mode === 'max') {
           if (rootNodes.length > 0) {
-            const max = Math.max(...rootNodes.map((r) => getEffectiveCalc(r, calcKey)));
+            let max = Math.max(...rootNodes.map((r) => hasFormula ? roundToDecimals(getEffectiveCalc(r, calcKey), effectiveDecimals) : getEffectiveCalc(r, calcKey)));
+            if (hasFormula) {
+              max = roundToDecimals(max, effectiveDecimals);
+            }
             grandTotalNode.calculatedValues[calcKey] = max;
             grandTotalNode.formattedValues[calcKey] = formatValue(max, calc.format, calc.decimalPlaces, calc.isAlreadyPercent);
           }
         } else if (mode === 'formula') {
-          recalculateSingleFormulaForNode(grandTotalNode, calc);
+          recalculateSingleFormulaForNode(grandTotalNode, calc, tpl, true);
         }
       }
     }

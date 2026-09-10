@@ -1,9 +1,26 @@
 import { createRequire } from 'module';
 import fs from 'fs';
-import { PivotTemplate, PivotHierarchyNode, HeaderGroupDefinition } from '../../src/types/pivot.js';
+import {
+  PivotTemplate,
+  PivotHierarchyNode,
+  HeaderGroupDefinition,
+  resolveTotalMode,
+  getColumnDecimals,
+} from '../../src/types/pivot.js';
 
 const require = createRequire(import.meta.url);
 const ExcelJS = require('exceljs');
+
+export function getExcelColumnLetter(colIndex: number): string {
+  let temp = colIndex;
+  let letter = '';
+  while (temp > 0) {
+    const mod = (temp - 1) % 26;
+    letter = String.fromCharCode(65 + mod) + letter;
+    temp = Math.floor((temp - 1) / 26);
+  }
+  return letter;
+}
 
 export class PivotExporter {
   public async exportToExcel(
@@ -183,6 +200,9 @@ export class PivotExporter {
     }
 
     // 2. Add Data Rows
+    const dataRowNumbers: number[] = [];
+    const nodeRowMap = new Map<PivotHierarchyNode, number>();
+
     for (const node of nodes) {
       const indent = ' '.repeat(Math.max(0, node.level - 1) * 3);
       const hierColStyle = template.columnStyles?.['hierarchy'] || {};
@@ -217,10 +237,43 @@ export class PivotExporter {
       }
 
       const row = worksheet.addRow(rowData);
+      nodeRowMap.set(node, row.number);
+      if (!node.isGrandTotal) {
+        dataRowNumbers.push(row.number);
+      }
 
       // Set Excel outline level for grouping safely
       if (node.level > 1) {
         row.outlineLevel = Math.min(node.level - 1, 7);
+      }
+
+      const isBoldRow = node.isGrandTotal || node.isSubtotal;
+      if (node.isGrandTotal) {
+        row.font = { bold: true };
+        row.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFE2E8F0' },
+        };
+      } else if (node.isSubtotal) {
+        row.font = { bold: true };
+        row.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFF1F5F9' },
+        };
+      }
+
+      // Hierarchy cell styling
+      const hierCell = row.getCell(1);
+      const hierText = String(rowData[0] ?? '').trim();
+      const hierEnclosed = hierText.startsWith('(') && hierText.endsWith(')');
+      if (hierEnclosed) {
+        hierCell.font = {
+          ...(hierCell.font || {}),
+          bold: isBoldRow || hierCell.font?.bold,
+          color: { argb: 'FFFF0000' },
+        };
       }
 
       // Format numeric & styled cells
@@ -231,6 +284,12 @@ export class PivotExporter {
         const cellVal = rowData[c];
         const numVal = typeof cellVal === 'number' ? cellVal : null;
         const isZero = numVal !== null && Math.abs(numVal) < 1e-9;
+        const isNegative = numVal !== null && numVal < 0;
+        const wrapParen = !!colStyle.alwaysParentheses;
+        const isEnclosedInParen =
+          isNegative ||
+          wrapParen ||
+          (typeof cellVal === 'string' && cellVal.trim().startsWith('(') && cellVal.trim().endsWith(')'));
 
         if (colStyle.textAlign) {
           cell.alignment = { horizontal: colStyle.textAlign };
@@ -241,67 +300,101 @@ export class PivotExporter {
         if (col.isNumeric && cellVal !== null) {
           const dec = typeof col.decimalPlaces === 'number' ? col.decimalPlaces : (col.format === '0.000' ? 3 : col.format === '#,##0' ? 0 : 2);
           const zeros = dec > 0 ? '.' + '0'.repeat(dec) : '';
-          const wrapParen = !!colStyle.alwaysParentheses;
+          const currSymbol = col.format?.includes('$') ? '$' : '₱';
 
           if (col.format?.includes('₱') || col.format?.includes('$')) {
             cell.numFmt = wrapParen
-              ? `("₱"#,##0${zeros});("₱"#,##0${zeros});"-"`
-              : `"₱"#,##0${zeros};("₱"#,##0${zeros});"-"`;
+              ? `[Red]("${currSymbol}"#,##0${zeros});[Red]("${currSymbol}"#,##0${zeros});"-"`
+              : `"${currSymbol}"#,##0${zeros};[Red]("${currSymbol}"#,##0${zeros});"-"`;
           } else if (col.format?.includes('%')) {
             if (col.isAlreadyPercent) {
               cell.numFmt = wrapParen
-                ? `(0${zeros}"%");(0${zeros}"%");"-"`
-                : `0${zeros}"%";(0${zeros}"%");"-"`;
+                ? `[Red](0${zeros}"%");[Red](0${zeros}"%");"-"`
+                : `0${zeros}"%";[Red](0${zeros}"%");"-"`;
             } else {
               cell.numFmt = wrapParen
-                ? `(0${zeros}%);(0${zeros}%);"-"`
-                : `0${zeros}%;(0${zeros}%);"-"`;
+                ? `[Red](0${zeros}%);[Red](0${zeros}%);"-"`
+                : `0${zeros}%;[Red](0${zeros}%);"-"`;
             }
           } else if (col.format === '0.000' || col.format === 'precision' || col.format === '0.0000') {
             cell.numFmt = wrapParen
-              ? `(0${zeros});(0${zeros});"-"`
-              : `0${zeros};(0${zeros});"-"`;
+              ? `[Red](0${zeros});[Red](0${zeros});"-"`
+              : `0${zeros};[Red](0${zeros});"-"`;
           } else {
             cell.numFmt = wrapParen
-              ? `(#,##0${zeros});(#,##0${zeros});"-"`
-              : `#,##0${zeros};(#,##0${zeros});"-"`;
+              ? `[Red](#,##0${zeros});[Red](#,##0${zeros});"-"`
+              : `#,##0${zeros};[Red](#,##0${zeros});"-"`;
+          }
+
+          // Output Excel formula on Grand Total cells for formula columns
+          if (node.isGrandTotal && dataRowNumbers.length > 0) {
+            const calcDef = template.calculatedFields?.find(
+              (calc) => (calc.alias || calc.name) === col.key
+            );
+            const hasFormula = Boolean(calcDef && calcDef.formula && calcDef.formula.trim());
+            const isPct = Boolean(
+              col.format?.includes('%') ||
+              col.isAlreadyPercent ||
+              calcDef?.format?.includes('%') ||
+              calcDef?.isAlreadyPercent
+            );
+            const totalMode = calcDef ? (calcDef.totalMode || resolveTotalMode(calcDef)) : 'sum';
+
+            if (hasFormula && !isPct && totalMode !== 'avg' && totalMode !== 'min' && totalMode !== 'max') {
+              const colLetter = getExcelColumnLetter(c + 1);
+              const formulaStr = this.buildGrandTotalFormula(colLetter, nodes, nodeRowMap, dataRowNumbers, dec);
+              if (formulaStr) {
+                cell.value = {
+                  formula: formulaStr,
+                  result: numVal ?? 0,
+                };
+              }
+            }
           }
         }
 
-        // Only apply custom cell background and text color if NOT zero
-        if (!isZero && cellVal !== null) {
-          if (colStyle.cellBgColor) {
-            const hex = colStyle.cellBgColor.replace('#', '').toUpperCase();
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + hex } };
-          }
-          if (colStyle.cellTextColor) {
-            const hex = colStyle.cellTextColor.replace('#', '').toUpperCase();
-            cell.font = { color: { argb: 'FF' + hex } };
-          }
+        // Font & font color: when value is enclosed in (), it MUST be in red font color
+        const shouldBeBold = isBoldRow || !!colStyle.isBold;
+        const shouldBeItalic = !!colStyle.isItalic;
+
+        if (isEnclosedInParen && !isZero) {
+          cell.font = {
+            ...(cell.font || {}),
+            bold: shouldBeBold,
+            italic: shouldBeItalic,
+            color: { argb: 'FFFF0000' },
+          };
+        } else if (colStyle.cellTextColor && !isZero && cellVal !== null) {
+          const hex = colStyle.cellTextColor.replace('#', '').toUpperCase();
+          cell.font = {
+            ...(cell.font || {}),
+            bold: shouldBeBold,
+            italic: shouldBeItalic,
+            color: { argb: 'FF' + hex },
+          };
+        } else if (shouldBeBold || shouldBeItalic) {
+          cell.font = {
+            ...(cell.font || {}),
+            bold: shouldBeBold,
+            italic: shouldBeItalic,
+          };
+        }
+
+        // Only apply custom cell background color if NOT zero
+        if (!isZero && cellVal !== null && colStyle.cellBgColor) {
+          const hex = colStyle.cellBgColor.replace('#', '').toUpperCase();
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + hex } };
         }
       }
 
-      // Styling for Subtotals and Grand Totals
+      // Border styling for Grand Total
       if (node.isGrandTotal) {
-        row.font = { bold: true };
-        row.fill = {
-          type: 'pattern',
-          pattern: 'solid',
-          fgColor: { argb: 'FFE2E8F0' },
-        };
         row.eachCell((cell: any) => {
           cell.border = {
             top: { style: 'thin' },
             bottom: { style: 'double' },
           };
         });
-      } else if (node.isSubtotal) {
-        row.font = { bold: true };
-        row.fill = {
-          type: 'pattern',
-          pattern: 'solid',
-          fgColor: { argb: 'FFF1F5F9' },
-        };
       }
     }
 
@@ -310,13 +403,66 @@ export class PivotExporter {
       const col = worksheet.getColumn(c);
       let maxLen = 12;
       col.eachCell({ includeEmpty: false }, (cell: any) => {
-        const text = cell.value !== null && cell.value !== undefined ? String(cell.value) : '';
+        let text = '';
+        if (cell.value !== null && cell.value !== undefined) {
+          if (typeof cell.value === 'object' && 'result' in cell.value) {
+            text = String(cell.value.result ?? '');
+          } else {
+            text = String(cell.value);
+          }
+        }
         if (text.length > maxLen) maxLen = text.length;
       });
       col.width = Math.min(Math.max(maxLen + 3, 14), 50);
     }
 
     await workbook.xlsx.writeFile(outputPath);
+  }
+
+  private buildGrandTotalFormula(
+    colLetter: string,
+    nodes: PivotHierarchyNode[],
+    nodeRowMap: Map<PivotHierarchyNode, number>,
+    dataRowNumbers: number[],
+    dec: number
+  ): string | null {
+    if (dataRowNumbers.length === 0) return null;
+
+    const hasSubtotals = nodes.some((n) => !n.isGrandTotal && n.isSubtotal);
+
+    // If there are no subtotals (single-level hierarchy or flat list), all data rows are contiguous
+    if (!hasSubtotals) {
+      const firstRow = dataRowNumbers[0];
+      const lastRow = dataRowNumbers[dataRowNumbers.length - 1];
+      return `SUMPRODUCT(ROUND(${colLetter}${firstRow}:${colLetter}${lastRow}, ${dec}))`;
+    }
+
+    // When subtotals exist:
+    // Check if root nodes (level 1) are contiguous (e.g. child rows are collapsed)
+    const rootNodes = nodes.filter((n) => !n.isGrandTotal && n.level === 1);
+    const rootRows = rootNodes
+      .map((n) => nodeRowMap.get(n))
+      .filter((r): r is number => typeof r === 'number');
+
+    if (rootRows.length > 0) {
+      const firstRoot = rootRows[0];
+      const lastRoot = rootRows[rootRows.length - 1];
+      const isContiguous = lastRoot - firstRoot + 1 === rootRows.length;
+      if (isContiguous) {
+        return `SUMPRODUCT(ROUND(${colLetter}${firstRoot}:${colLetter}${lastRoot}, ${dec}))`;
+      }
+
+      // If root rows are not contiguous (expanded child rows exist),
+      // sum the root rows individually if <= 30 to avoid exceeding formula limits
+      if (rootRows.length <= 30) {
+        return rootRows.map((r) => `ROUND(${colLetter}${r}, ${dec})`).join(' + ');
+      }
+    }
+
+    // Default fallback: contiguous data rows
+    const firstRow = dataRowNumbers[0];
+    const lastRow = dataRowNumbers[dataRowNumbers.length - 1];
+    return `SUMPRODUCT(ROUND(${colLetter}${firstRow}:${colLetter}${lastRow}, ${dec}))`;
   }
 
   public async exportToCsv(

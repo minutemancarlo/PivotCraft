@@ -28,7 +28,7 @@ export const Header: React.FC<HeaderProps> = ({
   latencyMs,
   theme,
   onToggleTheme,
-  currentVersion = '1.0.5',
+  currentVersion = '1.0.6',
   updateStatus = 'not-available',
   onCheckUpdate,
   onOpenUpdateModal,

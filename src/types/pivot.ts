@@ -50,6 +50,40 @@ export function resolveTotalMode(calc?: CalculatedFieldDefinition): 'sum' | 'for
   return 'sum';
 }
 
+export function getColumnDecimals(def?: { format?: string; decimalPlaces?: number }): number {
+  if (!def) return 2;
+  if (typeof def.decimalPlaces === 'number') return def.decimalPlaces;
+  const format = def.format;
+  if (format) {
+    if (format === '#,##0' || format === '0') return 0;
+    if (format === '0.0' || format === '0.0%') return 1;
+    if (format === '#,##0.00' || format === '₱#,##0.00' || format === '0.00%') return 2;
+    if (format === '0.000' || format === '#,##0.000' || format === 'precision') return 3;
+    if (format === '0.0000' || format === '#,##0.0000') return 4;
+    if (format.startsWith('decimals_')) {
+      const d = parseInt(format.replace('decimals_', ''), 10);
+      return isNaN(d) ? 2 : d;
+    }
+  }
+  return 2;
+}
+
+export function getEffectiveDecimals(def?: { format?: string; decimalPlaces?: number; isAlreadyPercent?: boolean }): number {
+  const dec = getColumnDecimals(def);
+  if (def?.format?.includes('%') && !def?.isAlreadyPercent) {
+    return dec + 2;
+  }
+  return dec;
+}
+
+export function roundToDecimals(num: number, decimals: number): number {
+  if (!isFinite(num) || isNaN(num)) return 0;
+  const sign = num < 0 ? -1 : 1;
+  const abs = Math.abs(num);
+  const factor = Math.pow(10, Math.max(0, decimals));
+  return sign * (Math.round((abs + Number.EPSILON) * factor) / factor);
+}
+
 export interface ColumnStyle {
   headerTextColor?: string;
   headerBgColor?: string;
